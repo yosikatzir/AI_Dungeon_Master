@@ -2,7 +2,7 @@ import type { ChatCompletionMessageParam } from "openai/resources/chat/completio
 import { openai, withRetry, AiError } from "@/lib/ai/openai";
 import { DM_MODEL, MAX_TOOL_ITERATIONS } from "@/lib/ai/config";
 import { assembleDmContext, type DmContextOptions } from "@/lib/ai/context";
-import { DM_TOOLS, executeTool } from "@/lib/ai/tools";
+import { DM_TOOLS, META_DM_TOOLS, executeTool } from "@/lib/ai/tools";
 import {
   addMessage,
   getCampaign,
@@ -21,8 +21,8 @@ function broadcastMessage(campaignId: number, message: CampaignMessage): void {
   getIoInstance()?.to(roomName(campaignId)).emit("new_message", message);
 }
 
-function setDmTyping(campaignId: number, typing: boolean): void {
-  getIoInstance()?.to(roomName(campaignId)).emit("dm_typing", { typing });
+function setDmTyping(campaignId: number, typing: boolean, channel: "story" | "meta" = "story"): void {
+  getIoInstance()?.to(roomName(campaignId)).emit("dm_typing", { typing, channel });
 }
 
 /** Reveals the DM's already-generated narration a few words at a time, so it reads as a live typing effect. */
@@ -31,14 +31,14 @@ async function streamNarration(campaignId: number, message: CampaignMessage): Pr
   if (!io) return;
   const room = roomName(campaignId);
 
-  io.to(room).emit("dm_stream_start", { id: message.id });
+  io.to(room).emit("dm_stream_start", { id: message.id, channel: message.channel });
 
   const words = message.content.split(/(\s+)/);
   let accumulated = "";
   const CHUNK_WORDS = 3;
   for (let i = 0; i < words.length; i += CHUNK_WORDS * 2) {
     accumulated += words.slice(i, i + CHUNK_WORDS * 2).join("");
-    io.to(room).emit("dm_stream_chunk", { id: message.id, text: accumulated });
+    io.to(room).emit("dm_stream_chunk", { id: message.id, text: accumulated, channel: message.channel });
     await new Promise((resolve) => setTimeout(resolve, 45));
   }
 
@@ -60,7 +60,10 @@ export async function runDmTurn(
   const campaign = getCampaign(campaignId);
   if (!campaign) return null;
 
-  setDmTyping(campaignId, true);
+  const channel: "story" | "meta" = options.channel === "meta" ? "meta" : "story";
+  const tools = channel === "meta" ? META_DM_TOOLS : DM_TOOLS;
+
+  setDmTyping(campaignId, true, channel);
   try {
     const messages: ChatCompletionMessageParam[] = assembleDmContext(campaignId, options);
     let finalContent: string | null = null;
@@ -70,7 +73,7 @@ export async function runDmTurn(
         openai.chat.completions.create({
           model: DM_MODEL,
           messages,
-          tools: DM_TOOLS,
+          tools,
           tool_choice: "auto",
         }),
       );
@@ -115,6 +118,7 @@ export async function runDmTurn(
               userId: null,
               characterId: null,
               content: broadcastContent,
+              channel,
             }),
           );
         }
@@ -140,9 +144,12 @@ export async function runDmTurn(
         userId: null,
         characterId: null,
         content: finalContent.trim(),
+        channel,
       });
       await streamNarration(campaignId, dmMessage);
-      await maybeSummarize(campaignId).catch(() => {});
+      if (channel === "story") {
+        await maybeSummarize(campaignId).catch(() => {});
+      }
       return dmMessage.content;
     }
   } catch (err) {
@@ -150,10 +157,17 @@ export async function runDmTurn(
       err instanceof AiError ? err.userFacing : "The DM hit a snag and will pick back up shortly.";
     broadcastMessage(
       campaignId,
-      addMessage({ campaignId, senderType: "system", userId: null, characterId: null, content: userFacing }),
+      addMessage({
+        campaignId,
+        senderType: "system",
+        userId: null,
+        characterId: null,
+        content: userFacing,
+        channel,
+      }),
     );
   } finally {
-    setDmTyping(campaignId, false);
+    setDmTyping(campaignId, false, channel);
   }
 
   return null;

@@ -30,11 +30,12 @@ import {
 import { rollInitiative, nextTurn, endCombat, getCombatState } from "@/lib/engine/combat";
 import { getCampaignPresence } from "@/lib/realtime/presence";
 import { runDmTurn } from "@/lib/ai/dm";
+import type { DmContextOptions } from "@/lib/ai/context";
 import { generateCampaignImage } from "@/lib/ai/images";
 import { AiError } from "@/lib/ai/openai";
 
-function triggerDmTurn(campaignId: number) {
-  runDmTurn(campaignId).catch((err) => {
+function triggerDmTurn(campaignId: number, options?: DmContextOptions) {
+  runDmTurn(campaignId, options).catch((err) => {
     console.error(`DM turn failed for campaign ${campaignId}:`, err);
   });
 }
@@ -514,7 +515,7 @@ export function registerSocketHandlers(io: SocketIOServer) {
         ack?.({ error: parsed.error.issues[0]?.message ?? "Invalid message" });
         return;
       }
-      const { campaignId, content } = parsed.data;
+      const { campaignId, content, channel, askDm } = parsed.data;
       const membership = getMembership(campaignId, data(socket).userId);
       if (!membership || membership.status !== "active") {
         ack?.({ error: "Not a member of this campaign" });
@@ -529,9 +530,17 @@ export function registerSocketHandlers(io: SocketIOServer) {
           userId: data(socket).userId,
           characterId: membership.characterId,
           content,
+          channel,
         }),
       );
-      triggerDmTurn(campaignId);
+
+      // Table talk never advances the story on its own — only an explicit
+      // "Ask the DM" triggers a (separately tool-restricted) meta turn.
+      if (channel === "story") {
+        triggerDmTurn(campaignId);
+      } else if (askDm) {
+        triggerDmTurn(campaignId, { channel: "meta" });
+      }
       ack?.({ ok: true });
     });
 

@@ -290,5 +290,6 @@ function ensureColumn(table: string, column: string, ddl: string): void {
 }
 
 ensureColumn("characters", "deleted_at", "deleted_at TEXT");
+ensureColumn("campaign_messages", "channel", "channel TEXT NOT NULL DEFAULT 'story'");
 
 export default db;

@@ -15,4 +15,8 @@ export const joinCampaignSchema = z.object({
 export const sendMessageSchema = z.object({
   campaignId: z.number().int().positive(),
   content: z.string().trim().min(1).max(4000),
+  channel: z.enum(["story", "meta"]).default("story"),
+  /** Meta-channel only: post the message AND trigger a meta DM turn. Plain
+   *  table talk (players chatting with each other) never calls the model. */
+  askDm: z.boolean().default(false),
 });

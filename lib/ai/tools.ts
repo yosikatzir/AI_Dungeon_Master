@@ -229,6 +229,14 @@ export const DM_TOOLS: ChatCompletionTool[] = [
   },
 ];
 
+/** The meta (table-talk) channel is out-of-character — the DM there can make
+ *  rulings and remember them, but can't touch game state directly. Rulings
+ *  get logged here and reach the story via the plot log, which is already
+ *  injected into every story turn's context. */
+export const META_DM_TOOLS: ChatCompletionTool[] = DM_TOOLS.filter(
+  (t) => t.type === "function" && t.function.name === "log_plot_event",
+);
+
 function requireCharacter(campaignId: number, characterName: string) {
   const member = resolveCharacterInCampaign(campaignId, characterName);
   if (!member || member.characterId === null) {

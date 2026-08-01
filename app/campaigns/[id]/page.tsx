@@ -17,7 +17,10 @@ export default async function CampaignPage({
   if (!campaign) notFound();
 
   const members = getCampaignMembers(campaignId);
-  const messages = listRecentMessages(campaignId);
+  const messages = [
+    ...listRecentMessages(campaignId, 100, "story"),
+    ...listRecentMessages(campaignId, 100, "meta"),
+  ].sort((a, b) => a.id - b.id);
   const myCharacters = listCharactersForUser(user.id);
   const myMembership = members.find((m) => m.userId === user.id) ?? null;
 

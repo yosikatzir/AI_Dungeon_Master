@@ -54,8 +54,12 @@ export default function CampaignRoom({
   const [joined, setJoined] = useState(myMembership?.status === "active");
   const [quickCharacter, setQuickCharacter] = useState<QuickPanelCharacter | null>(null);
   const [combat, setCombat] = useState<CombatStateProps>(EMPTY_COMBAT);
-  const [dmTyping, setDmTyping] = useState(false);
-  const [streamingMessage, setStreamingMessage] = useState<{ id: number; content: string } | null>(null);
+  const [dmTypingChannel, setDmTypingChannel] = useState<"story" | "meta" | null>(null);
+  const [streamingMessage, setStreamingMessage] = useState<{
+    id: number;
+    content: string;
+    channel: "story" | "meta";
+  } | null>(null);
   const [pendingRollRequest, setPendingRollRequest] = useState<PendingRollRequest | null>(
     campaign.pendingRollRequest,
   );
@@ -65,8 +69,19 @@ export default function CampaignRoom({
   const [imageGenerating, setImageGenerating] = useState(false);
   const [voiceCountdown, setVoiceCountdown] = useState<number | null>(null);
   const [mobileTab, setMobileTab] = useState<"log" | "party" | "character">("log");
+  const [activeChannel, setActiveChannel] = useState<"story" | "meta">("story");
+  const [unread, setUnread] = useState<{ story: number; meta: number }>({ story: 0, meta: 0 });
+  const activeChannelRef = useRef<"story" | "meta">("story");
 
   const myCharacterId = myMembership?.characterId ?? null;
+
+  function switchChannel(channel: "story" | "meta") {
+    setActiveChannel(channel);
+    activeChannelRef.current = channel;
+    setUnread((prev) => ({ ...prev, [channel]: 0 }));
+    setDraft("");
+    clearVoiceTimer();
+  }
 
   const refreshQuickCharacter = useCallback(async () => {
     if (!myCharacterId) return;
@@ -104,6 +119,9 @@ export default function CampaignRoom({
 
     socket.on("new_message", (message: CampaignMessage) => {
       setMessages((prev) => [...prev, message]);
+      if (message.channel !== activeChannelRef.current) {
+        setUnread((prev) => ({ ...prev, [message.channel]: prev[message.channel] + 1 }));
+      }
     });
 
     socket.on("presence_update", (payload: { onlineUserIds: number[] }) => {
@@ -122,16 +140,16 @@ export default function CampaignRoom({
       if (payload.characterId === myCharacterId) refreshQuickCharacter();
     });
 
-    socket.on("dm_typing", (payload: { typing: boolean }) => {
-      setDmTyping(payload.typing);
+    socket.on("dm_typing", (payload: { typing: boolean; channel?: "story" | "meta" }) => {
+      setDmTypingChannel(payload.typing ? (payload.channel ?? "story") : null);
     });
 
-    socket.on("dm_stream_start", (payload: { id: number }) => {
-      setStreamingMessage({ id: payload.id, content: "" });
+    socket.on("dm_stream_start", (payload: { id: number; channel?: "story" | "meta" }) => {
+      setStreamingMessage({ id: payload.id, content: "", channel: payload.channel ?? "story" });
     });
 
-    socket.on("dm_stream_chunk", (payload: { id: number; text: string }) => {
-      setStreamingMessage({ id: payload.id, content: payload.text });
+    socket.on("dm_stream_chunk", (payload: { id: number; text: string; channel?: "story" | "meta" }) => {
+      setStreamingMessage({ id: payload.id, content: payload.text, channel: payload.channel ?? "story" });
     });
 
     socket.on("dm_stream_end", (payload: { message: CampaignMessage }) => {
@@ -198,14 +216,18 @@ export default function CampaignRoom({
     setVoiceCountdown(null);
   }
 
-  function sendMessage() {
+  function sendMessage(askDm = false) {
     const content = draft.trim();
     if (!content || !socketRef.current) return;
     clearVoiceTimer();
     const ack: Ack = (res) => {
       if ("error" in res) setConnectionError(res.error);
     };
-    socketRef.current.emit("send_message", { campaignId: campaign.id, content }, ack);
+    socketRef.current.emit(
+      "send_message",
+      { campaignId: campaign.id, content, channel: activeChannel, askDm },
+      ack,
+    );
     setDraft("");
   }
 
@@ -272,11 +294,21 @@ export default function CampaignRoom({
   const myPendingRequest =
     pendingRollRequest && pendingRollRequest.characterId === myCharacterId ? pendingRollRequest : null;
 
+  const visibleMessages = messages.filter((m) => m.channel === activeChannel);
+
   function tabButtonClass(tab: typeof mobileTab) {
     return `min-h-[44px] flex-1 rounded-md px-2 text-xs font-medium uppercase tracking-wide transition ${
       mobileTab === tab
         ? "bg-amber-800/50 text-amber-100"
         : "text-amber-200/50 hover:bg-amber-900/30 hover:text-amber-200"
+    }`;
+  }
+
+  function channelTabClass(channel: "story" | "meta") {
+    return `min-h-[44px] flex-1 rounded-md px-3 text-xs font-medium transition ${
+      activeChannel === channel
+        ? "bg-amber-800/50 text-amber-100"
+        : "text-amber-200/60 hover:bg-amber-900/30 hover:text-amber-200"
     }`;
   }
 
@@ -350,14 +382,30 @@ export default function CampaignRoom({
       </aside>
 
       <section className={`${mobileTab === "log" ? "flex" : "hidden"} min-h-0 flex-1 flex-col md:flex`}>
+        <div className="mb-3 flex shrink-0 gap-1 rounded-lg border border-amber-800/30 bg-black/20 p-1">
+          <button onClick={() => switchChannel("story")} className={channelTabClass("story")}>
+            Story
+          </button>
+          <button onClick={() => switchChannel("meta")} className={channelTabClass("meta")}>
+            Table
+            {unread.meta > 0 && (
+              <span className="ml-1.5 rounded-full bg-red-600 px-1.5 py-0.5 text-[10px] text-red-50">
+                {unread.meta}
+              </span>
+            )}
+          </button>
+        </div>
+
         <div ref={logRef} className="min-h-0 flex-1 overflow-y-auto rounded border border-amber-800/30 p-3 sm:p-4">
-          {messages.length === 0 && !streamingMessage && (
+          {visibleMessages.length === 0 && !streamingMessage && (
             <p className="text-sm text-amber-200/40">
-              No messages yet. Say hello, or roll a die to break the ice.
+              {activeChannel === "story"
+                ? "No messages yet. Say hello, or roll a die to break the ice."
+                : "Nothing here yet. Chat with the party or ask the DM a question, out of character."}
             </p>
           )}
           <div className="flex flex-col gap-3">
-            {messages.map((m) =>
+            {visibleMessages.map((m) =>
               streamingMessage?.id === m.id ? null : (
                 <div key={m.id} className="text-sm">
                   {m.imagePath && (
@@ -385,54 +433,84 @@ export default function CampaignRoom({
                       🎲 {m.content}
                     </div>
                   ) : m.senderType === "dm" ? (
-                    <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 sm:p-4">
-                      <p className="text-[10px] uppercase tracking-widest text-amber-400/70">
-                        The Dungeon Master
+                    <div
+                      className={`rounded-lg border p-3 sm:p-4 ${
+                        m.channel === "meta"
+                          ? "border-sky-800/40 bg-sky-950/20"
+                          : "border-amber-900/40 bg-amber-950/20"
+                      }`}
+                    >
+                      <p
+                        className={`text-[10px] uppercase tracking-widest ${
+                          m.channel === "meta" ? "text-sky-400/70" : "text-amber-400/70"
+                        }`}
+                      >
+                        {m.channel === "meta" ? "The DM (table talk)" : "The Dungeon Master"}
                       </p>
-                      <p className="mt-1 whitespace-pre-wrap font-serif text-base leading-relaxed text-amber-100/90">
+                      <p
+                        className={`mt-1 whitespace-pre-wrap leading-relaxed ${
+                          m.channel === "meta" ? "text-sm text-sky-100/90" : "font-serif text-base text-amber-100/90"
+                        }`}
+                      >
                         {m.content}
                       </p>
                     </div>
                   ) : (
                     <div
                       className={`rounded-lg border px-3 py-2 ${
-                        m.userId === myUserId
-                          ? "border-amber-700/40 bg-amber-900/20"
-                          : "border-amber-800/20 bg-black/10"
+                        m.channel === "meta"
+                          ? "border-sky-800/30 bg-sky-950/10"
+                          : m.userId === myUserId
+                            ? "border-amber-700/40 bg-amber-900/20"
+                            : "border-amber-800/20 bg-black/10"
                       }`}
                     >
-                      <span className="font-medium text-amber-300">
+                      <span className={`font-medium ${m.channel === "meta" ? "text-sky-300" : "text-amber-300"}`}>
                         {m.characterName ?? m.username ?? "Unknown"}
                         {m.userId === myUserId && <span className="text-amber-200/40"> (you)</span>}
                       </span>
-                      <p className="text-amber-100">{m.content}</p>
+                      <p className={m.channel === "meta" ? "text-sky-100/90" : "text-amber-100"}>{m.content}</p>
                     </div>
                   )}
                 </div>
               ),
             )}
 
-            {streamingMessage && (
-              <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 sm:p-4">
-                <p className="text-[10px] uppercase tracking-widest text-amber-400/70">The Dungeon Master</p>
-                <p className="mt-1 whitespace-pre-wrap font-serif text-base leading-relaxed text-amber-100/90">
+            {streamingMessage && streamingMessage.channel === activeChannel && (
+              <div
+                className={`rounded-lg border p-3 sm:p-4 ${
+                  activeChannel === "meta" ? "border-sky-800/40 bg-sky-950/20" : "border-amber-900/40 bg-amber-950/20"
+                }`}
+              >
+                <p
+                  className={`text-[10px] uppercase tracking-widest ${
+                    activeChannel === "meta" ? "text-sky-400/70" : "text-amber-400/70"
+                  }`}
+                >
+                  {activeChannel === "meta" ? "The DM (table talk)" : "The Dungeon Master"}
+                </p>
+                <p
+                  className={`mt-1 whitespace-pre-wrap leading-relaxed ${
+                    activeChannel === "meta" ? "text-sm text-sky-100/90" : "font-serif text-base text-amber-100/90"
+                  }`}
+                >
                   {streamingMessage.content}
                   <span className="animate-pulse">▍</span>
                 </p>
               </div>
             )}
 
-            {dmTyping && !streamingMessage && (
+            {dmTypingChannel === activeChannel && !streamingMessage && (
               <p className="text-xs italic text-amber-200/40">The DM is thinking…</p>
             )}
 
-            {imageGenerating && (
+            {activeChannel === "story" && imageGenerating && (
               <p className="text-xs italic text-amber-200/40">Painting the scene…</p>
             )}
           </div>
         </div>
 
-        {pendingImageConfirmation && (
+        {activeChannel === "story" && pendingImageConfirmation && (
           <div className="mt-3 flex flex-col gap-2 rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-sm sm:flex-row sm:items-center sm:justify-between">
             <span className="text-amber-100">
               Illustrate: {pendingImageConfirmation.subject}?
@@ -455,20 +533,24 @@ export default function CampaignRoom({
           </div>
         )}
 
-        <div className="mt-3 shrink-0">
-          <DiceTray
-            hasCharacter={myCharacterId !== null}
-            pendingRequest={myPendingRequest}
-            onRoll={handleRoll}
-          />
-        </div>
+        {activeChannel === "story" && (
+          <>
+            <div className="mt-3 shrink-0">
+              <DiceTray
+                hasCharacter={myCharacterId !== null}
+                pendingRequest={myPendingRequest}
+                onRoll={handleRoll}
+              />
+            </div>
 
-        <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2">
-          <IllustrateButton disabled={imageGenerating} onRequest={handleIllustrateRequest} />
-          <VoiceRecordButton campaignId={campaign.id} onTranscribed={handleTranscribed} />
-        </div>
+            <div className="mt-3 flex shrink-0 flex-wrap items-center gap-2">
+              <IllustrateButton disabled={imageGenerating} onRequest={handleIllustrateRequest} />
+              <VoiceRecordButton campaignId={campaign.id} onTranscribed={handleTranscribed} />
+            </div>
+          </>
+        )}
 
-        <div className="mt-3 flex shrink-0 gap-2">
+        <div className="mt-3 flex shrink-0 flex-wrap gap-2">
           <input
             value={draft}
             onChange={(e) => {
@@ -478,15 +560,24 @@ export default function CampaignRoom({
             onKeyDown={(e) => {
               if (e.key === "Enter") sendMessage();
             }}
-            placeholder="Say something…"
-            className="min-h-[44px] flex-1 rounded border border-amber-700/40 bg-black/30 px-3 py-2 text-amber-50"
+            placeholder={activeChannel === "story" ? "Say something…" : "Chat with the table…"}
+            className="min-h-[44px] w-full min-w-0 flex-1 basis-full rounded border border-amber-700/40 bg-black/30 px-3 py-2 text-amber-50 sm:basis-auto"
           />
           <button
-            onClick={sendMessage}
-            className="min-h-[44px] min-w-[44px] rounded bg-amber-700 px-4 py-2 text-sm text-amber-50 hover:bg-amber-600"
+            onClick={() => sendMessage()}
+            className="min-h-[44px] min-w-[44px] shrink-0 whitespace-nowrap rounded bg-amber-700 px-4 py-2 text-sm text-amber-50 hover:bg-amber-600"
           >
             Send
           </button>
+          {activeChannel === "meta" && (
+            <button
+              onClick={() => sendMessage(true)}
+              disabled={!draft.trim()}
+              className="min-h-[44px] shrink-0 whitespace-nowrap rounded border border-sky-600/50 px-4 py-2 text-sm text-sky-200 hover:bg-sky-900/30 disabled:opacity-40"
+            >
+              Ask the DM
+            </button>
+          )}
         </div>
         {voiceCountdown !== null && (
           <p className="mt-1 shrink-0 text-xs text-amber-300">

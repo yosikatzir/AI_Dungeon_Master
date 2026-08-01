@@ -4,7 +4,7 @@ import { resolveCharacter } from "@/lib/characters";
 import { computeCharacterSheet } from "@/lib/rules/characterSheet";
 import { getCombatState } from "@/lib/engine/combat";
 import { getOnlineUserIds } from "@/lib/realtime/presence";
-import { buildDmSystemPrompt } from "@/prompts/dm-system";
+import { buildDmSystemPrompt, buildMetaSystemPrompt } from "@/prompts/dm-system";
 import { RECENT_MESSAGE_WINDOW } from "@/lib/ai/config";
 
 /** Full text beyond this length is ellipsized — keeps a multi-character party from blowing the context budget every turn. */
@@ -137,9 +137,23 @@ function messageToChatParam(message: {
   return { role: "user", content: `[System] ${message.content}` };
 }
 
+/** Plain "Speaker: content" rendering for the out-of-character table-talk
+ *  block appended to story turns — deliberately not a ChatCompletionMessageParam
+ *  since it's folded into one system message, not a real turn-by-turn transcript. */
+function tableTalkLine(message: { senderType: string; username: string | null; characterName: string | null; content: string }): string {
+  if (message.senderType === "dm") return `DM: ${message.content}`;
+  const speaker = message.characterName ?? message.username ?? "A player";
+  return `${speaker}: ${message.content}`;
+}
+
 export interface DmContextOptions {
   /** Appended as a final user turn — used to kick off a brand-new campaign with no messages yet. */
   kickoffInstruction?: string;
+  /** "meta" assembles context for the out-of-character table-talk channel
+   *  instead of the story: a different system prompt, the meta message
+   *  history instead of the story's, and no restriction on which tools the
+   *  caller passes (that's enforced by the caller using META_DM_TOOLS). */
+  channel?: "story" | "meta";
 }
 
 export function assembleDmContext(
@@ -148,9 +162,10 @@ export function assembleDmContext(
 ): ChatCompletionMessageParam[] {
   const campaign = getCampaign(campaignId);
   if (!campaign) throw new Error("Campaign not found");
+  const isMeta = options.channel === "meta";
 
   const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: buildDmSystemPrompt() },
+    { role: "system", content: isMeta ? buildMetaSystemPrompt() : buildDmSystemPrompt() },
     { role: "system", content: buildStateBlock(campaign) },
   ];
 
@@ -164,9 +179,26 @@ export function assembleDmContext(
     });
   }
 
-  const recent = listRecentMessages(campaignId, RECENT_MESSAGE_WINDOW);
-  for (const message of recent) {
-    messages.push(messageToChatParam(message));
+  if (isMeta) {
+    const recentMeta = listRecentMessages(campaignId, RECENT_MESSAGE_WINDOW, "meta");
+    for (const message of recentMeta) {
+      messages.push(messageToChatParam(message));
+    }
+  } else {
+    const recent = listRecentMessages(campaignId, RECENT_MESSAGE_WINDOW, "story");
+    for (const message of recent) {
+      messages.push(messageToChatParam(message));
+    }
+
+    const recentTableTalk = listRecentMessages(campaignId, 10, "meta");
+    if (recentTableTalk.length > 0) {
+      messages.push({
+        role: "system",
+        content: `TABLE TALK (out-of-character — honor any DM rulings made here):\n${recentTableTalk
+          .map(tableTalkLine)
+          .join("\n")}`,
+      });
+    }
   }
 
   if (options.kickoffInstruction) {

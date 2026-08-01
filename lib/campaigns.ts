@@ -71,6 +71,11 @@ export interface CampaignMessage {
   content: string;
   rollData: RollOutcome | null;
   imagePath: string | null;
+  /** "meta" is the out-of-character table-talk channel — see CampaignRoom's
+   *  Story/Table toggle. Everything mechanical (rolls, system mutation
+   *  notes, DM narration) defaults to "story"; addMessage only needs an
+   *  explicit "meta" for table-talk chat and meta DM replies. */
+  channel: "story" | "meta";
   createdAt: string;
 }
 
@@ -199,18 +204,22 @@ export function leaveCampaignPermanently(campaignId: number, userId: number): vo
   ).run(campaignId, userId);
 }
 
-export function listRecentMessages(campaignId: number, limit = 100): CampaignMessage[] {
+export function listRecentMessages(
+  campaignId: number,
+  limit = 100,
+  channel: "story" | "meta" = "story",
+): CampaignMessage[] {
   const rows = db
     .prepare(
       `SELECT cmsg.*, u.username, c.name AS character_name
        FROM campaign_messages cmsg
        LEFT JOIN users u ON u.id = cmsg.user_id
        LEFT JOIN characters c ON c.id = cmsg.character_id
-       WHERE cmsg.campaign_id = ?
+       WHERE cmsg.campaign_id = ? AND cmsg.channel = ?
        ORDER BY cmsg.id DESC
        LIMIT ?`,
     )
-    .all(campaignId, limit) as any[];
+    .all(campaignId, channel, limit) as any[];
 
   return rows.reverse().map(rowToMessage);
 }
@@ -227,6 +236,7 @@ function rowToMessage(row: any): CampaignMessage {
     content: row.content,
     rollData: row.roll_data ? JSON.parse(row.roll_data) : null,
     imagePath: row.image_path,
+    channel: row.channel,
     createdAt: row.created_at,
   };
 }
@@ -239,11 +249,12 @@ export function addMessage(params: {
   content: string;
   rollData?: RollOutcome;
   imagePath?: string;
+  channel?: "story" | "meta";
 }): CampaignMessage {
   const result = db
     .prepare(
-      `INSERT INTO campaign_messages (campaign_id, sender_type, user_id, character_id, content, roll_data, image_path)
-       VALUES (?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO campaign_messages (campaign_id, sender_type, user_id, character_id, content, roll_data, image_path, channel)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       params.campaignId,
@@ -253,6 +264,7 @@ export function addMessage(params: {
       params.content,
       params.rollData ? JSON.stringify(params.rollData) : null,
       params.imagePath ?? null,
+      params.channel ?? "story",
     );
 
   const id = Number(result.lastInsertRowid);
@@ -269,7 +281,9 @@ export function addMessage(params: {
   return rowToMessage(row);
 }
 
-/** Messages strictly after a given id, oldest first — used to feed the summarizer only what it hasn't seen. */
+/** Messages strictly after a given id, oldest first, story channel only —
+ *  used to feed the summarizer only what it hasn't seen. Table talk never
+ *  gets folded into the story summary. */
 export function listMessagesAfter(campaignId: number, afterId: number): CampaignMessage[] {
   const rows = db
     .prepare(
@@ -277,7 +291,7 @@ export function listMessagesAfter(campaignId: number, afterId: number): Campaign
        FROM campaign_messages cmsg
        LEFT JOIN users u ON u.id = cmsg.user_id
        LEFT JOIN characters c ON c.id = cmsg.character_id
-       WHERE cmsg.campaign_id = ? AND cmsg.id > ?
+       WHERE cmsg.campaign_id = ? AND cmsg.id > ? AND cmsg.channel = 'story'
        ORDER BY cmsg.id ASC`,
     )
     .all(campaignId, afterId) as any[];
