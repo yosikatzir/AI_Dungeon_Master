@@ -18,11 +18,16 @@ export default async function HomePage() {
       </div>
 
       <p className="text-sm text-amber-200/50">
-        Character builder and campaigns arrive in later phases. For now this
-        confirms your account is set up.
+        Campaigns arrive in a later phase. For now, build a character.
       </p>
 
       <div className="flex items-center gap-3">
+        <Link
+          href="/characters"
+          className="rounded-md bg-amber-700 px-4 py-2 text-sm text-amber-50 hover:bg-amber-600"
+        >
+          Your Characters
+        </Link>
         {user.isAdmin && (
           <Link
             href="/admin"
