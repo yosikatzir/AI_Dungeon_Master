@@ -18,7 +18,7 @@ export default async function HomePage() {
       </div>
 
       <p className="text-sm text-amber-200/50">
-        Campaigns arrive in a later phase. For now, build a character.
+        Build a character, then jump into a campaign.
       </p>
 
       <div className="flex items-center gap-3">
@@ -27,6 +27,12 @@ export default async function HomePage() {
           className="rounded-md bg-amber-700 px-4 py-2 text-sm text-amber-50 hover:bg-amber-600"
         >
           Your Characters
+        </Link>
+        <Link
+          href="/campaigns"
+          className="rounded-md bg-amber-700 px-4 py-2 text-sm text-amber-50 hover:bg-amber-600"
+        >
+          Campaigns
         </Link>
         {user.isAdmin && (
           <Link

@@ -195,6 +195,44 @@ db.exec(`
 
   CREATE INDEX IF NOT EXISTS idx_characters_user ON characters(user_id);
   CREATE INDEX IF NOT EXISTS idx_character_items_character ON character_items(character_id);
+
+  -- Campaigns: shared sessions any family member can create, join, or leave.
+  CREATE TABLE IF NOT EXISTS campaigns (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    name TEXT NOT NULL,
+    owner_user_id INTEGER NOT NULL REFERENCES users(id),
+    mode TEXT NOT NULL, -- 'surprise' | 'guided'
+    guidelines TEXT,
+    premise TEXT,
+    opening_scene TEXT,
+    status TEXT NOT NULL DEFAULT 'active', -- 'active' | 'archived'
+    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS campaign_members (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    user_id INTEGER NOT NULL REFERENCES users(id),
+    character_id INTEGER REFERENCES characters(id),
+    status TEXT NOT NULL DEFAULT 'active', -- 'active' | 'left'
+    joined_at TEXT NOT NULL DEFAULT (datetime('now')),
+    UNIQUE(campaign_id, user_id)
+  );
+
+  CREATE TABLE IF NOT EXISTS campaign_messages (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
+    sender_type TEXT NOT NULL, -- 'player' | 'system' | 'dm'
+    user_id INTEGER REFERENCES users(id),
+    character_id INTEGER REFERENCES characters(id),
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_campaign_members_campaign ON campaign_members(campaign_id);
+  CREATE INDEX IF NOT EXISTS idx_campaign_members_user ON campaign_members(user_id);
+  CREATE INDEX IF NOT EXISTS idx_campaign_messages_campaign ON campaign_messages(campaign_id, id);
 `);
 
 export default db;

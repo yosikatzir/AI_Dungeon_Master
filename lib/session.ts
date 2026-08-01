@@ -1,5 +1,5 @@
 import { cookies } from "next/headers";
-import { getIronSession, type SessionOptions } from "iron-session";
+import { getIronSession, unsealData, type SessionOptions } from "iron-session";
 
 export interface SessionData {
   userId?: number;
@@ -24,4 +24,24 @@ export const sessionOptions: SessionOptions = {
 export async function getSession() {
   const cookieStore = await cookies();
   return getIronSession<SessionData>(cookieStore, sessionOptions);
+}
+
+/**
+ * Decrypts the session cookie's raw value directly. Socket.IO connections
+ * don't go through Next's request pipeline, so `cookies()`/`getSession()`
+ * aren't available there — this is the socket server's way to identify who's
+ * connecting.
+ */
+export async function unsealSessionCookie(
+  rawCookieValue: string,
+): Promise<{ userId: number; username: string } | null> {
+  try {
+    const data = await unsealData<SessionData>(rawCookieValue, {
+      password: sessionOptions.password,
+    });
+    if (!data.userId || !data.username) return null;
+    return { userId: data.userId, username: data.username };
+  } catch {
+    return null;
+  }
 }

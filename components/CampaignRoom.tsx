@@ -1,0 +1,211 @@
+"use client";
+
+import { useEffect, useRef, useState } from "react";
+import { useRouter } from "next/navigation";
+import type { Socket } from "socket.io-client";
+import { connectCampaignSocket } from "@/lib/realtime/socketClient";
+import type { Campaign, CampaignMember, CampaignMessage } from "@/lib/campaigns";
+
+interface Props {
+  campaign: Campaign;
+  initialMembers: CampaignMember[];
+  initialMessages: CampaignMessage[];
+  myCharacters: { id: number; name: string }[];
+  myUserId: number;
+  myUsername: string;
+  myMembership: CampaignMember | null;
+}
+
+export default function CampaignRoom({
+  campaign,
+  initialMembers,
+  initialMessages,
+  myCharacters,
+  myUserId,
+  myMembership,
+}: Props) {
+  const router = useRouter();
+  const socketRef = useRef<Socket | null>(null);
+  const logRef = useRef<HTMLDivElement>(null);
+
+  const [members, setMembers] = useState(initialMembers);
+  const [messages, setMessages] = useState(initialMessages);
+  const [onlineUserIds, setOnlineUserIds] = useState<number[]>([]);
+  const [draft, setDraft] = useState("");
+  const [connectionError, setConnectionError] = useState<string | null>(null);
+  const [joined, setJoined] = useState(myMembership?.status === "active");
+
+  // router.refresh() re-fetches this page's server data (e.g. after enrolling)
+  // and delivers it as a fresh `initialMembers` prop — sync it into state.
+  useEffect(() => {
+    setMembers(initialMembers);
+  }, [initialMembers]);
+
+  useEffect(() => {
+    const socket = connectCampaignSocket();
+    socketRef.current = socket;
+
+    socket.on("connect_error", () => setConnectionError("Could not connect. Retrying…"));
+    socket.on("connect", () => setConnectionError(null));
+
+    socket.on("new_message", (message: CampaignMessage) => {
+      setMessages((prev) => [...prev, message]);
+    });
+
+    socket.on("presence_update", (payload: { onlineUserIds: number[] }) => {
+      setOnlineUserIds(payload.onlineUserIds);
+    });
+
+    socket.on("members_update", (updated: CampaignMember[]) => {
+      setMembers(updated);
+    });
+
+    if (joined) {
+      socket.emit("join_campaign", campaign.id, (res: { ok: true } | { error: string }) => {
+        if ("error" in res) setConnectionError(res.error);
+      });
+    }
+
+    return () => {
+      socket.disconnect();
+    };
+  }, [campaign.id, joined]);
+
+  useEffect(() => {
+    logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
+  }, [messages]);
+
+  async function handleEnroll(characterId: number | null) {
+    await fetch(`/api/campaigns/${campaign.id}/join`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ characterId }),
+    });
+    setJoined(true);
+    router.refresh();
+  }
+
+  async function handleLeave() {
+    socketRef.current?.disconnect();
+    await fetch(`/api/campaigns/${campaign.id}/leave`, { method: "POST" });
+    router.push("/campaigns");
+  }
+
+  function sendMessage() {
+    const content = draft.trim();
+    if (!content || !socketRef.current) return;
+    socketRef.current.emit(
+      "send_message",
+      { campaignId: campaign.id, content },
+      (res: { ok: true } | { error: string }) => {
+        if ("error" in res) setConnectionError(res.error);
+      },
+    );
+    setDraft("");
+  }
+
+  if (!joined) {
+    return (
+      <main className="mx-auto max-w-xl px-6 py-10">
+        <h1 className="font-serif text-2xl text-amber-100">{campaign.name}</h1>
+        <p className="mt-2 text-sm text-amber-200/60">
+          Join this campaign to see the session and chat live with the party.
+        </p>
+        <div className="mt-4 flex flex-col gap-2">
+          {myCharacters.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => handleEnroll(c.id)}
+              className="rounded border border-amber-700/40 px-4 py-2 text-left text-sm text-amber-100 hover:bg-amber-900/30"
+            >
+              Join as {c.name}
+            </button>
+          ))}
+          <button
+            onClick={() => handleEnroll(null)}
+            className="rounded border border-amber-700/40 px-4 py-2 text-left text-sm text-amber-200/70 hover:bg-amber-900/30"
+          >
+            Join without a character (spectate)
+          </button>
+        </div>
+      </main>
+    );
+  }
+
+  return (
+    <main className="mx-auto flex min-h-screen max-w-5xl gap-4 px-6 py-6">
+      <aside className="w-56 shrink-0 border-r border-amber-800/30 pr-4">
+        <h2 className="font-serif text-lg text-amber-100">{campaign.name}</h2>
+        <p className="text-xs text-amber-200/50">
+          {campaign.mode === "surprise" ? "DM surprise" : "Guided"}
+        </p>
+
+        <h3 className="mt-4 text-xs uppercase tracking-wide text-amber-200/50">Party</h3>
+        <ul className="mt-2 flex flex-col gap-1 text-sm">
+          {members
+            .filter((m) => m.status === "active")
+            .map((m) => (
+              <li key={m.id} className="flex items-center gap-2 text-amber-100">
+                <span
+                  className={`h-2 w-2 rounded-full ${onlineUserIds.includes(m.userId) ? "bg-green-500" : "bg-gray-600"}`}
+                />
+                {m.characterName ?? m.username}
+                {m.userId === myUserId && <span className="text-amber-200/40"> (you)</span>}
+              </li>
+            ))}
+        </ul>
+
+        {connectionError && <p className="mt-3 text-xs text-red-400">{connectionError}</p>}
+
+        <button
+          onClick={handleLeave}
+          className="mt-6 rounded border border-red-800/40 px-3 py-1 text-xs text-red-300 hover:bg-red-950/30"
+        >
+          Leave campaign
+        </button>
+      </aside>
+
+      <section className="flex flex-1 flex-col">
+        <div ref={logRef} className="flex-1 overflow-y-auto rounded border border-amber-800/30 p-4">
+          {messages.length === 0 && (
+            <p className="text-sm text-amber-200/40">No messages yet. Say hello!</p>
+          )}
+          <div className="flex flex-col gap-2">
+            {messages.map((m) => (
+              <div key={m.id} className="text-sm">
+                {m.senderType === "system" ? (
+                  <span className="italic text-amber-200/40">{m.content}</span>
+                ) : (
+                  <>
+                    <span className="text-amber-300">
+                      {m.characterName ?? m.username ?? "Unknown"}:
+                    </span>{" "}
+                    <span className="text-amber-100">{m.content}</span>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="mt-3 flex gap-2">
+          <input
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") sendMessage();
+            }}
+            placeholder="Say something…"
+            className="flex-1 rounded border border-amber-700/40 bg-black/30 px-3 py-2 text-amber-50"
+          />
+          <button
+            onClick={sendMessage}
+            className="rounded bg-amber-700 px-4 py-2 text-sm text-amber-50 hover:bg-amber-600"
+          >
+            Send
+          </button>
+        </div>
+      </section>
+    </main>
+  );
+}

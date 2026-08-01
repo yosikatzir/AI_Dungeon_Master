@@ -12,7 +12,7 @@ const eslintConfig = [
   {
     // Raw SQLite row-mapping layers: `any` is the pragmatic choice for
     // deserializing better-sqlite3 rows into our typed content/domain shapes.
-    files: ["lib/content.ts", "lib/characters.ts"],
+    files: ["lib/content.ts", "lib/characters.ts", "lib/campaigns.ts"],
     rules: {
       "@typescript-eslint/no-explicit-any": "off",
     },
