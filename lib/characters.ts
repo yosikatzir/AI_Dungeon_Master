@@ -16,6 +16,7 @@ import { abilityModifier } from "@/lib/rules/abilities";
 import type { AbilityScores } from "@/lib/rules/abilities";
 import type { CreateCharacterInput } from "@/lib/validation/character";
 import type { CharacterItem, CharacterRecord, ResolvedCharacter } from "@/lib/rules/character";
+import type { Background, ClassDef, Species } from "@/lib/rules/types";
 
 export class CharacterValidationError extends Error {}
 
@@ -59,12 +60,13 @@ function rowToCharacterRecord(row: any): CharacterRecord {
     appearance: row.appearance,
     backstory: row.backstory,
     notes: row.notes,
+    isDeleted: !!row.deleted_at,
   };
 }
 
 export function listCharactersForUser(userId: number): CharacterRecord[] {
   return db
-    .prepare("SELECT * FROM characters WHERE user_id = ? ORDER BY updated_at DESC")
+    .prepare("SELECT * FROM characters WHERE user_id = ? AND deleted_at IS NULL ORDER BY updated_at DESC")
     .all(userId)
     .map(rowToCharacterRecord);
 }
@@ -76,6 +78,7 @@ export function listAllCharactersWithOwner(): (CharacterRecord & { ownerUsername
       `SELECT c.*, u.username AS owner_username
        FROM characters c
        JOIN users u ON u.id = c.user_id
+       WHERE c.deleted_at IS NULL
        ORDER BY u.username, c.name`,
     )
     .all() as any[];
@@ -146,7 +149,21 @@ function resolveStartingItems(
   return Array.from(quantities, ([equipmentId, quantity]) => ({ equipmentId, quantity }));
 }
 
-export function createCharacter(userId: number, input: CreateCharacterInput): number {
+interface DerivedBuild {
+  species: Species;
+  klass: ClassDef;
+  background: Background;
+  finalScores: AbilityScores;
+  allSkillProficiencies: string[];
+  startingItems: { equipmentId: string; quantity: number }[];
+  hpFirstLevel: number;
+}
+
+/** Shared by createCharacter and rebuildCharacter: validates a build against
+ *  the 5e rules (legal ability scores, skill choices, spell caps) and derives
+ *  the values that get persisted. Throws CharacterValidationError on any
+ *  illegal build. */
+function validateAndDeriveBuild(input: CreateCharacterInput): DerivedBuild {
   const species = getSpeciesById(input.speciesId);
   const klass = getClassById(input.classId);
   const background = getBackgroundById(input.backgroundId);
@@ -209,8 +226,14 @@ export function createCharacter(userId: number, input: CreateCharacterInput): nu
   }
 
   const startingItems = resolveStartingItems(klass.startingEquipment, background.equipment);
-
   const hpFirstLevel = klass.hitDie; // max die at level 1, CON applied by the sheet engine at read time
+
+  return { species, klass, background, finalScores, allSkillProficiencies, startingItems, hpFirstLevel };
+}
+
+export function createCharacter(userId: number, input: CreateCharacterInput): number {
+  const { background, finalScores, allSkillProficiencies, startingItems, hpFirstLevel } =
+    validateAndDeriveBuild(input);
 
   const insertCharacter = db.prepare(`
     INSERT INTO characters (
@@ -319,4 +342,153 @@ export function setCharacterPortrait(id: number, portraitPath: string): void {
   db.prepare(
     "UPDATE characters SET portrait_path = ?, updated_at = datetime('now') WHERE id = ?",
   ).run(portraitPath, id);
+}
+
+export interface CharacterIdentityPatch {
+  name?: string;
+  alignment?: string | null;
+  appearance?: string | null;
+  backstory?: string | null;
+}
+
+/** Identity edits — name, alignment, appearance, backstory — don't touch rules
+ *  math, so unlike a rebuild they're allowed anytime, even mid-campaign. */
+export function updateCharacterIdentity(id: number, patch: CharacterIdentityPatch): void {
+  const fields: string[] = [];
+  const values: Record<string, unknown> = { id };
+
+  if (patch.name !== undefined) {
+    fields.push("name = @name");
+    values.name = patch.name;
+  }
+  if (patch.alignment !== undefined) {
+    fields.push("alignment = @alignment");
+    values.alignment = patch.alignment;
+  }
+  if (patch.appearance !== undefined) {
+    fields.push("appearance = @appearance");
+    values.appearance = patch.appearance;
+  }
+  if (patch.backstory !== undefined) {
+    fields.push("backstory = @backstory");
+    values.backstory = patch.backstory;
+  }
+
+  if (fields.length === 0) return;
+  fields.push("updated_at = datetime('now')");
+
+  db.prepare(`UPDATE characters SET ${fields.join(", ")} WHERE id = @id`).run(values);
+}
+
+export function hasActiveMembership(characterId: number): boolean {
+  return !!db
+    .prepare("SELECT 1 FROM campaign_members WHERE character_id = ? AND status = 'active'")
+    .get(characterId);
+}
+
+/** A build (species/class/background/abilities/skills/spells) can only be
+ *  changed while the character is level 1 and not enrolled in any active
+ *  campaign — see rebuildCharacter. */
+export function canRebuildCharacter(character: CharacterRecord): boolean {
+  return !character.isDeleted && character.level === 1 && !hasActiveMembership(character.id);
+}
+
+/** Replaces a character's build (species/class/background/abilities/skills/
+ *  spells) in place. Only legal for a level-1 character with no active
+ *  campaign membership — a mid-campaign class swap breaks both the fiction
+ *  and the mechanics (HP, slots, items already in play). Identity fields
+ *  (name/alignment/appearance/backstory) travel along with the same input
+ *  since the builder UI collects them together, but use
+ *  updateCharacterIdentity if you only need those. */
+export function rebuildCharacter(id: number, input: CreateCharacterInput): void {
+  const existing = getCharacterRecord(id);
+  if (!existing) throw new CharacterValidationError("Character not found");
+  if (existing.isDeleted) throw new CharacterValidationError("This character has been deleted");
+  if (existing.level !== 1) {
+    throw new CharacterValidationError("Only a level 1 character's build can be changed");
+  }
+  if (hasActiveMembership(id)) {
+    throw new CharacterValidationError(
+      "Leave all active campaigns before changing this character's build",
+    );
+  }
+
+  const { background, finalScores, allSkillProficiencies, startingItems, hpFirstLevel } =
+    validateAndDeriveBuild(input);
+
+  const rebuild = db.transaction(() => {
+    db.prepare(`
+      UPDATE characters SET
+        name = @name, species_id = @speciesId, class_id = @classId, subclass_id = NULL,
+        background_id = @backgroundId, alignment = @alignment,
+        strength = @str, dexterity = @dex, constitution = @con,
+        intelligence = @int, wisdom = @wis, charisma = @cha,
+        hp_current = @hpCurrent, temp_hp = 0, hit_dice_used = 0, inspiration = 0,
+        skill_proficiencies = @skillProficiencies, feats = @feats,
+        cantrips_known = @cantripsKnown, spells_known = @spellsKnown, spell_slots_used = '{}',
+        conditions = '[]', appearance = @appearance, backstory = @backstory,
+        updated_at = datetime('now')
+      WHERE id = @id
+    `).run({
+      id,
+      name: input.name,
+      speciesId: input.speciesId,
+      classId: input.classId,
+      backgroundId: input.backgroundId,
+      alignment: input.alignment ?? null,
+      str: finalScores.str,
+      dex: finalScores.dex,
+      con: finalScores.con,
+      int: finalScores.int,
+      wis: finalScores.wis,
+      cha: finalScores.cha,
+      hpCurrent: hpFirstLevel + abilityModifier(finalScores.con),
+      skillProficiencies: JSON.stringify(allSkillProficiencies),
+      feats: JSON.stringify([background.originFeatId]),
+      cantripsKnown: JSON.stringify(input.cantripsKnown),
+      spellsKnown: JSON.stringify(input.spellsKnown),
+      appearance: input.appearance ?? null,
+      backstory: input.backstory ?? null,
+    });
+
+    db.prepare("DELETE FROM character_items WHERE character_id = ?").run(id);
+    const insertItem = db.prepare(`
+      INSERT INTO character_items (character_id, equipment_id, quantity, equipped)
+      VALUES (?, ?, ?, ?)
+    `);
+    const equipmentMap = new Map(
+      getEquipmentByIds(startingItems.map((i) => i.equipmentId)).map((e) => [e.id, e]),
+    );
+    for (const item of startingItems) {
+      const equip = equipmentMap.get(item.equipmentId);
+      const equippedByDefault = equip?.category === "armor" || equip?.category === "weapon" ? 1 : 0;
+      insertItem.run(id, item.equipmentId, item.quantity, equippedByDefault);
+    }
+  });
+
+  rebuild();
+}
+
+/** Soft-deletes a character: any active campaign memberships are set to
+ *  'left' (so the DM writes them out, same as a normal drop-out) and the
+ *  character is marked deleted rather than removed — chat history and old
+ *  roll data still reference it by name. Returns the ids of campaigns the
+ *  character was actively enrolled in, so the caller can post a system
+ *  message to each (this module doesn't know about Socket.IO broadcasting). */
+export function softDeleteCharacter(id: number): number[] {
+  const affectedCampaignIds = (
+    db
+      .prepare("SELECT campaign_id FROM campaign_members WHERE character_id = ? AND status = 'active'")
+      .all(id) as { campaign_id: number }[]
+  ).map((r) => r.campaign_id);
+
+  const del = db.transaction(() => {
+    db.prepare(
+      "UPDATE campaign_members SET status = 'left' WHERE character_id = ? AND status = 'active'",
+    ).run(id);
+    db.prepare("UPDATE characters SET deleted_at = datetime('now') WHERE id = ?").run(id);
+  });
+  del();
+
+  return affectedCampaignIds;
 }

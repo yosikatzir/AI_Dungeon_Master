@@ -279,4 +279,16 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_campaign_messages_campaign ON campaign_messages(campaign_id, id);
 `);
 
+/** Additive schema changes for tables that already shipped — SQLite can add a
+ *  column in place, so this is simpler than a migration framework for the
+ *  single-file-database, upsert-by-id world this app already lives in. */
+function ensureColumn(table: string, column: string, ddl: string): void {
+  const columns = db.prepare(`PRAGMA table_info(${table})`).all() as { name: string }[];
+  if (!columns.some((c) => c.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${ddl}`);
+  }
+}
+
+ensureColumn("characters", "deleted_at", "deleted_at TEXT");
+
 export default db;

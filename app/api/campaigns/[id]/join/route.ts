@@ -30,6 +30,9 @@ export async function POST(
     if (!character || character.userId !== user.id) {
       return NextResponse.json({ error: "That character isn't yours" }, { status: 400 });
     }
+    if (character.isDeleted) {
+      return NextResponse.json({ error: "That character has been deleted" }, { status: 400 });
+    }
   }
 
   joinCampaign(campaignId, user.id, characterId);

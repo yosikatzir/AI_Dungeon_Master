@@ -49,3 +49,12 @@ export const updateCharacterSchema = z.object({
 });
 
 export type UpdateCharacterInput = z.infer<typeof updateCharacterSchema>;
+
+export const updateCharacterIdentitySchema = z.object({
+  name: z.string().trim().min(1).max(60).optional(),
+  alignment: z.string().max(40).nullable().optional(),
+  appearance: z.string().max(2000).nullable().optional(),
+  backstory: z.string().max(4000).nullable().optional(),
+});
+
+export type UpdateCharacterIdentityInput = z.infer<typeof updateCharacterIdentitySchema>;

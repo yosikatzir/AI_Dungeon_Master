@@ -29,6 +29,7 @@ export interface CharacterRecord {
   appearance: string | null;
   backstory: string | null;
   notes: string | null;
+  isDeleted: boolean;
 }
 
 export interface CharacterItem {

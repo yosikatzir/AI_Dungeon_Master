@@ -27,6 +27,20 @@ interface Props {
   backgrounds: Background[];
   feats: Feat[];
   spells: Spell[];
+  /** "rebuild" reuses this same step flow to replace an existing level-1
+   *  character's build in place instead of creating a new character. Ability
+   *  scores/species/class/background/skills/spells always start blank in
+   *  both modes — a rebuild can't safely reconstruct the original base
+   *  scores and bonus split from the stored final values, so it's treated as
+   *  starting the build over, which is the point of a level-1-only rebuild. */
+  mode?: "create" | "rebuild";
+  characterId?: number;
+  initialDetails?: {
+    name?: string;
+    alignment?: string;
+    appearance?: string;
+    backstory?: string;
+  };
 }
 
 type AbilityMethod = "standard_array" | "point_buy" | "manual";
@@ -46,7 +60,16 @@ const STEPS = [
   "Review",
 ] as const;
 
-export default function CharacterBuilder({ species, classes, backgrounds, feats, spells }: Props) {
+export default function CharacterBuilder({
+  species,
+  classes,
+  backgrounds,
+  feats,
+  spells,
+  mode = "create",
+  characterId,
+  initialDetails,
+}: Props) {
   const router = useRouter();
   const [step, setStep] = useState(0);
   const [error, setError] = useState<string | null>(null);
@@ -71,10 +94,10 @@ export default function CharacterBuilder({ species, classes, backgrounds, feats,
   const [cantrips, setCantrips] = useState<string[]>([]);
   const [spellsKnown, setSpellsKnown] = useState<string[]>([]);
 
-  const [name, setName] = useState("");
-  const [alignment, setAlignment] = useState("");
-  const [appearance, setAppearance] = useState("");
-  const [backstory, setBackstory] = useState("");
+  const [name, setName] = useState(initialDetails?.name ?? "");
+  const [alignment, setAlignment] = useState(initialDetails?.alignment ?? "");
+  const [appearance, setAppearance] = useState(initialDetails?.appearance ?? "");
+  const [backstory, setBackstory] = useState(initialDetails?.backstory ?? "");
 
   const selectedSpecies = useMemo(() => species.find((s) => s.id === speciesId) ?? null, [species, speciesId]);
   const selectedClass = useMemo(() => classes.find((c) => c.id === classId) ?? null, [classes, classId]);
@@ -202,13 +225,16 @@ export default function CharacterBuilder({ species, classes, backgrounds, feats,
     });
   }
 
+  const isRebuild = mode === "rebuild";
+
   async function submit() {
     if (!selectedClass || !selectedBackground || !speciesId || !finalScores) return;
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/characters", {
-        method: "POST",
+      const url = isRebuild ? `/api/characters/${characterId}/rebuild` : "/api/characters";
+      const res = await fetch(url, {
+        method: isRebuild ? "PUT" : "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({
           name,
@@ -229,10 +255,10 @@ export default function CharacterBuilder({ species, classes, backgrounds, feats,
       });
       const data = await res.json();
       if (!res.ok) {
-        setError(data.error ?? "Could not create character");
+        setError(data.error ?? `Could not ${isRebuild ? "rebuild" : "create"} character`);
         return;
       }
-      router.push(`/characters/${data.id}`);
+      router.push(`/characters/${isRebuild ? characterId : data.id}`);
     } catch {
       setError("Could not reach the server. Please try again.");
     } finally {
@@ -242,7 +268,14 @@ export default function CharacterBuilder({ species, classes, backgrounds, feats,
 
   return (
     <div className="mx-auto max-w-3xl px-6 py-10">
-      <h1 className="font-serif text-2xl text-amber-100">Create a Character</h1>
+      <h1 className="font-serif text-2xl text-amber-100">
+        {isRebuild ? "Rebuild Character" : "Create a Character"}
+      </h1>
+      {isRebuild && (
+        <p className="mt-1 text-sm text-amber-200/60">
+          Starting the build over from species — name, alignment, appearance, and backstory carry over below.
+        </p>
+      )}
       <ol className="mt-4 flex flex-wrap gap-2 text-xs text-amber-200/50">
         {STEPS.map((s, i) => (
           <li
@@ -620,7 +653,13 @@ export default function CharacterBuilder({ species, classes, backgrounds, feats,
             disabled={submitting}
             className="rounded bg-amber-700 px-4 py-2 text-sm text-amber-50 hover:bg-amber-600 disabled:opacity-50"
           >
-            {submitting ? "Creating…" : "Create Character"}
+            {submitting
+              ? isRebuild
+                ? "Rebuilding…"
+                : "Creating…"
+              : isRebuild
+                ? "Rebuild Character"
+                : "Create Character"}
           </button>
         ) : (
           <button

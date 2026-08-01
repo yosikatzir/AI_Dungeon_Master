@@ -45,6 +45,7 @@ function baseCharacter(overrides: Partial<CharacterRecord>): CharacterRecord {
     appearance: null,
     backstory: null,
     notes: null,
+    isDeleted: false,
     ...overrides,
   };
 }

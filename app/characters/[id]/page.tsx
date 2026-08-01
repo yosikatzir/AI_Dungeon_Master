@@ -1,12 +1,14 @@
 import { redirect, notFound } from "next/navigation";
 import Link from "next/link";
 import { getCurrentUser } from "@/lib/auth";
-import { resolveCharacter } from "@/lib/characters";
+import { resolveCharacter, canRebuildCharacter, hasActiveMembership } from "@/lib/characters";
 import { getAllFeats } from "@/lib/content";
 import { computeCharacterSheet } from "@/lib/rules/characterSheet";
 import { ABILITY_NAMES } from "@/lib/rules/constants";
 import PortraitUpload from "@/components/PortraitUpload";
 import CharacterVitals from "@/components/CharacterVitals";
+import CharacterIdentityEditor from "@/components/CharacterIdentityEditor";
+import DeleteCharacterButton from "@/components/DeleteCharacterButton";
 
 export default async function CharacterSheetPage({
   params,
@@ -18,12 +20,14 @@ export default async function CharacterSheetPage({
 
   const id = Number((await params).id);
   const resolved = resolveCharacter(id);
-  if (!resolved || resolved.character.userId !== user.id) notFound();
+  if (!resolved || resolved.character.userId !== user.id || resolved.character.isDeleted) notFound();
 
   const { character, species, klass, subclass, background, items } = resolved;
   const sheet = computeCharacterSheet(resolved);
   const feats = getAllFeats();
   const originFeat = feats.find((f) => character.feats.includes(f.id));
+  const rebuildEligible = canRebuildCharacter(character);
+  const enrolledInActiveCampaigns = hasActiveMembership(character.id);
 
   return (
     <main className="mx-auto max-w-4xl px-6 py-10">
@@ -173,6 +177,41 @@ export default async function CharacterSheetPage({
           {character.backstory && <p className="mt-2 text-sm text-amber-200/70">{character.backstory}</p>}
         </Section>
       )}
+
+      <Section title="Manage">
+        <div className="flex flex-col gap-3">
+          <CharacterIdentityEditor
+            characterId={character.id}
+            name={character.name}
+            alignment={character.alignment}
+            appearance={character.appearance}
+            backstory={character.backstory}
+          />
+
+          <div className="flex flex-wrap items-center gap-2">
+            {rebuildEligible ? (
+              <Link
+                href={`/characters/${character.id}/edit`}
+                className="min-h-[44px] rounded border border-amber-700/40 px-4 py-2 text-sm text-amber-200 hover:bg-amber-900/30"
+              >
+                Rebuild (change species/class/abilities)
+              </Link>
+            ) : (
+              <p className="text-xs text-amber-200/40">
+                {character.level !== 1
+                  ? "Only a level 1 character's build can be changed."
+                  : "Leave every active campaign to change this character's build."}
+              </p>
+            )}
+          </div>
+
+          <DeleteCharacterButton
+            characterId={character.id}
+            characterName={character.name}
+            enrolledInActiveCampaigns={enrolledInActiveCampaigns}
+          />
+        </div>
+      </Section>
     </main>
   );
 }

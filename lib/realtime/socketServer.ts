@@ -97,6 +97,9 @@ function requireOwnCharacterInCampaign(
   if (!character || character.userId !== data(socket).userId) {
     return "That's not your character";
   }
+  if (character.isDeleted) {
+    return "That character has been deleted";
+  }
   return null;
 }
 
