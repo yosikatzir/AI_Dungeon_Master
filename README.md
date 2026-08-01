@@ -14,7 +14,7 @@ full spec).
 - **Phase 4 (dice, game engine, admin dice bias) — done.**
 - **Phase 5 (the AI DM: tool-calling, streaming narration, campaign memory) — done.**
 - **Phase 6 (voice input, AI image generation with a consistency registry) — done.**
-- Phase 7 (polish) — not yet implemented.
+- **Phase 7 (polish: mobile layout, message styling, empty states) — done.**
 
 ## Tech stack
 
@@ -184,6 +184,29 @@ side-by-side comparison screenshot — that would need a second paid
 generation of the same subject purely to prove it, which felt like
 spending real API cost to re-confirm code that's already been read and
 is structurally identical to the verified first-generation path.
+
+## Mobile layout and polish
+
+`CampaignRoom` (`components/CampaignRoom.tsx`) is a single three-column flex
+layout (party/initiative, chat log + controls, your character) on screens
+`md:` and up. Below that breakpoint the columns collapse into a Party / Log /
+Character tab bar backed by one `mobileTab` state value, so the whole room
+still fits one screen without horizontal scrolling; the "Character" tab only
+appears once a character is actually enrolled. Dice tray buttons, the
+hold-to-record mic button, the illustrate/send buttons, and the join/enroll
+buttons all carry a 44px minimum touch target. Message rendering is
+per-`senderType`: DM messages get a labeled parchment card in serif type,
+player messages get a bubble (highlighted if it's yours), system messages are
+centered italic asides, and roll messages get a colored card (green/red/
+purple) based on success, failure, or a plain roll.
+
+Verified live end to end at both a 1280px desktop width and a 375px mobile
+viewport against a running campaign (chat, streaming DM narration, a
+DM-requested skill check resolved through the dice tray, a damage mutation
+logged as a system message and reflected in the HP bar): no console errors,
+no horizontal overflow at 375px, and the party/log/character tabs each show
+only their own panel on mobile while the three panels sit side by side again
+above the `md` breakpoint.
 
 ## Moving to AWS later
 

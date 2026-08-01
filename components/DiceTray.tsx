@@ -86,7 +86,7 @@ export default function DiceTray({
           <select
             value={purposeKind}
             onChange={(e) => setPurposeKind(e.target.value as typeof purposeKind)}
-            className="rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
+            className="min-h-[44px] rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
           >
             <option value="raw">Plain roll (d20)</option>
             <option value="ability_check">Ability check</option>
@@ -99,7 +99,7 @@ export default function DiceTray({
             <select
               value={ability}
               onChange={(e) => setAbility(e.target.value as Ability)}
-              className="rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
+              className="min-h-[44px] rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
             >
               {ABILITIES.map((a) => (
                 <option key={a} value={a}>
@@ -113,7 +113,7 @@ export default function DiceTray({
             <select
               value={skill}
               onChange={(e) => setSkill(e.target.value)}
-              className="rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
+              className="min-h-[44px] rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
             >
               {SKILLS.map((s) => (
                 <option key={s.id} value={s.id}>
@@ -129,7 +129,7 @@ export default function DiceTray({
               placeholder="DC (optional)"
               value={dc}
               onChange={(e) => setDc(e.target.value)}
-              className="w-24 rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
+              className="min-h-[44px] w-24 rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
             />
           )}
         </div>
@@ -143,7 +143,7 @@ export default function DiceTray({
               key={sides}
               onClick={() => rollSide(sides)}
               disabled={rollingSides !== null}
-              className={`rounded border px-3 py-2 text-sm font-medium transition ${
+              className={`min-h-[44px] min-w-[44px] rounded border px-3 py-2 text-sm font-medium transition ${
                 rollingSides === sides
                   ? "animate-spin border-amber-400 text-amber-300"
                   : isHighlighted
