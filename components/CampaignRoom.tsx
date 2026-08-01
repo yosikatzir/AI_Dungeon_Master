@@ -1,10 +1,13 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Socket } from "socket.io-client";
 import { connectCampaignSocket } from "@/lib/realtime/socketClient";
 import type { Campaign, CampaignMember, CampaignMessage } from "@/lib/campaigns";
+import DiceTray, { type RollPurpose } from "@/components/DiceTray";
+import CharacterQuickPanel, { type QuickPanelCharacter } from "@/components/CharacterQuickPanel";
+import InitiativeTracker, { type CombatStateProps } from "@/components/InitiativeTracker";
 
 interface Props {
   campaign: Campaign;
@@ -15,6 +18,10 @@ interface Props {
   myUsername: string;
   myMembership: CampaignMember | null;
 }
+
+type Ack = (res: { ok: true } | { error: string }) => void;
+
+const EMPTY_COMBAT: CombatStateProps = { active: false, turnOrder: [], currentTurnIndex: 0 };
 
 export default function CampaignRoom({
   campaign,
@@ -34,6 +41,31 @@ export default function CampaignRoom({
   const [draft, setDraft] = useState("");
   const [connectionError, setConnectionError] = useState<string | null>(null);
   const [joined, setJoined] = useState(myMembership?.status === "active");
+  const [quickCharacter, setQuickCharacter] = useState<QuickPanelCharacter | null>(null);
+  const [combat, setCombat] = useState<CombatStateProps>(EMPTY_COMBAT);
+
+  const myCharacterId = myMembership?.characterId ?? null;
+
+  const refreshQuickCharacter = useCallback(async () => {
+    if (!myCharacterId) return;
+    const res = await fetch(`/api/characters/${myCharacterId}`);
+    if (!res.ok) return;
+    const data = await res.json();
+    setQuickCharacter({
+      id: data.character.id,
+      name: data.character.name,
+      hpCurrent: data.character.hpCurrent,
+      tempHp: data.character.tempHp,
+      hpMax: data.sheet.hpMax,
+      spellSlots: data.sheet.spellSlots
+        ? { max: data.sheet.spellSlots.max, used: data.sheet.spellSlots.used }
+        : null,
+    });
+  }, [myCharacterId]);
+
+  useEffect(() => {
+    if (joined) refreshQuickCharacter();
+  }, [joined, refreshQuickCharacter]);
 
   // router.refresh() re-fetches this page's server data (e.g. after enrolling)
   // and delivers it as a fresh `initialMembers` prop — sync it into state.
@@ -60,6 +92,14 @@ export default function CampaignRoom({
       setMembers(updated);
     });
 
+    socket.on("combat_update", (state: CombatStateProps) => {
+      setCombat(state);
+    });
+
+    socket.on("character_update", (payload: { characterId: number }) => {
+      if (payload.characterId === myCharacterId) refreshQuickCharacter();
+    });
+
     if (joined) {
       socket.emit("join_campaign", campaign.id, (res: { ok: true } | { error: string }) => {
         if ("error" in res) setConnectionError(res.error);
@@ -69,11 +109,17 @@ export default function CampaignRoom({
     return () => {
       socket.disconnect();
     };
-  }, [campaign.id, joined]);
+  }, [campaign.id, joined, myCharacterId, refreshQuickCharacter]);
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
   }, [messages]);
+
+  function emit(event: string, payload: unknown) {
+    socketRef.current?.emit(event, payload, (res: { ok: true } | { error: string }) => {
+      if (res && "error" in res) setConnectionError(res.error);
+    });
+  }
 
   async function handleEnroll(characterId: number | null) {
     await fetch(`/api/campaigns/${campaign.id}/join`, {
@@ -94,14 +140,15 @@ export default function CampaignRoom({
   function sendMessage() {
     const content = draft.trim();
     if (!content || !socketRef.current) return;
-    socketRef.current.emit(
-      "send_message",
-      { campaignId: campaign.id, content },
-      (res: { ok: true } | { error: string }) => {
-        if ("error" in res) setConnectionError(res.error);
-      },
-    );
+    const ack: Ack = (res) => {
+      if ("error" in res) setConnectionError(res.error);
+    };
+    socketRef.current.emit("send_message", { campaignId: campaign.id, content }, ack);
     setDraft("");
+  }
+
+  function handleRoll(purpose: RollPurpose) {
+    emit("roll_dice", { campaignId: campaign.id, characterId: myCharacterId, purpose });
   }
 
   if (!joined) {
@@ -133,7 +180,7 @@ export default function CampaignRoom({
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-5xl gap-4 px-6 py-6">
+    <main className="mx-auto flex min-h-screen max-w-6xl gap-4 px-6 py-6">
       <aside className="w-56 shrink-0 border-r border-amber-800/30 pr-4">
         <h2 className="font-serif text-lg text-amber-100">{campaign.name}</h2>
         <p className="text-xs text-amber-200/50">
@@ -155,6 +202,15 @@ export default function CampaignRoom({
             ))}
         </ul>
 
+        <div className="mt-4">
+          <InitiativeTracker
+            combat={combat}
+            onRollInitiative={() => emit("roll_initiative", { campaignId: campaign.id })}
+            onNextTurn={() => emit("next_turn", { campaignId: campaign.id })}
+            onEndCombat={() => emit("end_combat", { campaignId: campaign.id })}
+          />
+        </div>
+
         {connectionError && <p className="mt-3 text-xs text-red-400">{connectionError}</p>}
 
         <button
@@ -175,6 +231,8 @@ export default function CampaignRoom({
               <div key={m.id} className="text-sm">
                 {m.senderType === "system" ? (
                   <span className="italic text-amber-200/40">{m.content}</span>
+                ) : m.senderType === "roll" ? (
+                  <span className="text-purple-300">🎲 {m.content}</span>
                 ) : (
                   <>
                     <span className="text-amber-300">
@@ -186,6 +244,10 @@ export default function CampaignRoom({
               </div>
             ))}
           </div>
+        </div>
+
+        <div className="mt-3">
+          <DiceTray hasCharacter={myCharacterId !== null} onRoll={handleRoll} />
         </div>
 
         <div className="mt-3 flex gap-2">
@@ -206,6 +268,18 @@ export default function CampaignRoom({
           </button>
         </div>
       </section>
+
+      {quickCharacter && (
+        <aside className="w-64 shrink-0 border-l border-amber-800/30 pl-4">
+          <CharacterQuickPanel
+            character={quickCharacter}
+            onDamage={(amount) => emit("apply_damage", { campaignId: campaign.id, characterId: quickCharacter.id, amount })}
+            onHeal={(amount) => emit("apply_healing", { campaignId: campaign.id, characterId: quickCharacter.id, amount })}
+            onConsumeSlot={(level) => emit("consume_spell_slot", { campaignId: campaign.id, characterId: quickCharacter.id, level })}
+            onLongRest={() => emit("long_rest", { campaignId: campaign.id, characterId: quickCharacter.id })}
+          />
+        </aside>
+      )}
     </main>
   );
 }

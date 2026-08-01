@@ -223,11 +223,30 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS campaign_messages (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     campaign_id INTEGER NOT NULL REFERENCES campaigns(id) ON DELETE CASCADE,
-    sender_type TEXT NOT NULL, -- 'player' | 'system' | 'dm'
+    sender_type TEXT NOT NULL, -- 'player' | 'system' | 'dm' | 'roll'
     user_id INTEGER REFERENCES users(id),
     character_id INTEGER REFERENCES characters(id),
     content TEXT NOT NULL,
+    roll_data TEXT, -- JSON D20RollResult, only set when sender_type = 'roll'
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Admin-only. Deliberately never joined into any character-facing query —
+  -- only lib/rules/dice.ts's roll resolution and the admin settings route
+  -- may read or write this table.
+  CREATE TABLE IF NOT EXISTS character_dice_bias (
+    character_id INTEGER PRIMARY KEY REFERENCES characters(id) ON DELETE CASCADE,
+    mode TEXT NOT NULL DEFAULT 'none', -- 'none' | 'flat' | 'advantage_weighted'
+    flat_bonus INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS campaign_combat (
+    campaign_id INTEGER PRIMARY KEY REFERENCES campaigns(id) ON DELETE CASCADE,
+    active INTEGER NOT NULL DEFAULT 0,
+    turn_order TEXT NOT NULL DEFAULT '[]', -- JSON [{ characterId, name, initiative }]
+    current_turn_index INTEGER NOT NULL DEFAULT 0,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 
   CREATE INDEX IF NOT EXISTS idx_campaign_members_campaign ON campaign_members(campaign_id);

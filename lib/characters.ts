@@ -69,6 +69,19 @@ export function listCharactersForUser(userId: number): CharacterRecord[] {
     .map(rowToCharacterRecord);
 }
 
+/** Admin-only: every character across every family account, for the admin settings area. */
+export function listAllCharactersWithOwner(): (CharacterRecord & { ownerUsername: string })[] {
+  const rows = db
+    .prepare(
+      `SELECT c.*, u.username AS owner_username
+       FROM characters c
+       JOIN users u ON u.id = c.user_id
+       ORDER BY u.username, c.name`,
+    )
+    .all() as any[];
+  return rows.map((row) => ({ ...rowToCharacterRecord(row), ownerUsername: row.owner_username }));
+}
+
 export function getCharacterRecord(id: number): CharacterRecord | null {
   const row = db.prepare("SELECT * FROM characters WHERE id = ?").get(id);
   return row ? rowToCharacterRecord(row) : null;

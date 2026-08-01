@@ -1,5 +1,6 @@
 import db from "@/lib/db";
 import type { CreateCampaignInput } from "@/lib/validation/campaign";
+import type { RollOutcome } from "@/lib/engine/rolls";
 
 export interface Campaign {
   id: number;
@@ -28,12 +29,13 @@ export interface CampaignMember {
 export interface CampaignMessage {
   id: number;
   campaignId: number;
-  senderType: "player" | "system" | "dm";
+  senderType: "player" | "system" | "dm" | "roll";
   userId: number | null;
   username: string | null;
   characterId: number | null;
   characterName: string | null;
   content: string;
+  rollData: RollOutcome | null;
   createdAt: string;
 }
 
@@ -165,7 +167,11 @@ export function listRecentMessages(campaignId: number, limit = 100): CampaignMes
     )
     .all(campaignId, limit) as any[];
 
-  return rows.reverse().map((row) => ({
+  return rows.reverse().map(rowToMessage);
+}
+
+function rowToMessage(row: any): CampaignMessage {
+  return {
     id: row.id,
     campaignId: row.campaign_id,
     senderType: row.sender_type,
@@ -174,23 +180,32 @@ export function listRecentMessages(campaignId: number, limit = 100): CampaignMes
     characterId: row.character_id,
     characterName: row.character_name,
     content: row.content,
+    rollData: row.roll_data ? JSON.parse(row.roll_data) : null,
     createdAt: row.created_at,
-  }));
+  };
 }
 
 export function addMessage(params: {
   campaignId: number;
-  senderType: "player" | "system" | "dm";
+  senderType: "player" | "system" | "dm" | "roll";
   userId: number | null;
   characterId: number | null;
   content: string;
+  rollData?: RollOutcome;
 }): CampaignMessage {
   const result = db
     .prepare(
-      `INSERT INTO campaign_messages (campaign_id, sender_type, user_id, character_id, content)
-       VALUES (?, ?, ?, ?, ?)`,
+      `INSERT INTO campaign_messages (campaign_id, sender_type, user_id, character_id, content, roll_data)
+       VALUES (?, ?, ?, ?, ?, ?)`,
     )
-    .run(params.campaignId, params.senderType, params.userId, params.characterId, params.content);
+    .run(
+      params.campaignId,
+      params.senderType,
+      params.userId,
+      params.characterId,
+      params.content,
+      params.rollData ? JSON.stringify(params.rollData) : null,
+    );
 
   const id = Number(result.lastInsertRowid);
   const row = db
@@ -203,15 +218,5 @@ export function addMessage(params: {
     )
     .get(id) as any;
 
-  return {
-    id: row.id,
-    campaignId: row.campaign_id,
-    senderType: row.sender_type,
-    userId: row.user_id,
-    username: row.username,
-    characterId: row.character_id,
-    characterName: row.character_name,
-    content: row.content,
-    createdAt: row.created_at,
-  };
+  return rowToMessage(row);
 }

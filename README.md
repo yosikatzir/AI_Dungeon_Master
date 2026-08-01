@@ -11,8 +11,8 @@ full spec).
 - **Phase 1 (foundation: app shell, database, auth) — done.**
 - **Phase 2 (SRD 5.2 rules engine, seed content, character builder) — done.**
 - **Phase 3 (campaigns, realtime chat, presence) — done.**
-- Phases 4–7 (dice/game engine, the AI DM, voice, images, polish) — not yet
-  implemented.
+- **Phase 4 (dice, game engine, admin dice bias) — done.**
+- Phases 5–7 (the AI DM, voice, images, polish) — not yet implemented.
 
 ## Tech stack
 
@@ -99,8 +99,27 @@ npm test
 
 Unit tests (via `vitest`) cover the 5e rules engine (ability scores, HP,
 spell slots, AC/attack/save/skill math — including an end-to-end legal
-level-1 Fighter and Wizard built from the real seeded content) and a
-referential-integrity suite over all the seeded SRD content.
+level-1 Fighter and Wizard built from the real seeded content), the dice
+engine (RNG, the admin bias function, DC/AC resolution, nat 20/1 rules), and
+a referential-integrity suite over all the seeded SRD content.
+
+## Dice, the game engine, and admin dice bias
+
+All dice rolls run through `lib/rules/dice.ts`, using `node:crypto`'s
+`randomInt` (not `Math.random`) for genuine fairness. `apply_damage`,
+`apply_healing`, `consume_spell_slot`, `grant_item`/`remove_item`,
+`award_xp`, and condition tracking live in `lib/engine/mutations.ts` as
+plain validated functions — these are what Phase 5's AI DM tool-calling
+will wire up to the model; for now they're driven by the player's own
+in-session actions (damage/heal/spell-slot buttons, dice tray) over
+Socket.IO, broadcasting live to everyone in the campaign room.
+
+The admin-only secret dice bias (`yosikatzir` → Admin settings → Dice bias)
+sets a per-character bias applied strictly inside `rollBiasedD20` — the
+`character_dice_bias` table is never joined into any character-facing query,
+and `RollOutcome` (what actually reaches the client, gets persisted, and
+gets broadcast) never carries bias information. The displayed die is itself
+the post-bias value, so it's indistinguishable from an honest roll.
 
 ## How sessions & campaign memory will work
 
