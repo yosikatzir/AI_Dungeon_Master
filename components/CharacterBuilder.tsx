@@ -569,6 +569,7 @@ export default function CharacterBuilder({ species, classes, backgrounds, feats,
                 value={appearance}
                 onChange={(e) => setAppearance(e.target.value)}
                 rows={3}
+                placeholder="Height, build, scars, how you carry yourself — the DM uses this to decide how NPCs react to you on sight."
                 className="rounded border border-amber-700/40 bg-black/30 px-2 py-1 text-amber-50"
               />
             </label>

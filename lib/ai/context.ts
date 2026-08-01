@@ -7,6 +7,49 @@ import { getOnlineUserIds } from "@/lib/realtime/presence";
 import { buildDmSystemPrompt } from "@/prompts/dm-system";
 import { RECENT_MESSAGE_WINDOW } from "@/lib/ai/config";
 
+/** Full text beyond this length is ellipsized — keeps a multi-character party from blowing the context budget every turn. */
+export const APPEARANCE_MAX_CHARS = 300;
+export const BACKSTORY_MAX_CHARS = 150;
+
+export function truncateForContext(text: string, maxChars: number): string {
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars).trimEnd()}…`;
+}
+
+export interface PresentCharacterInfo {
+  name: string;
+  speciesName: string;
+  className: string;
+  backgroundName: string;
+  level: number;
+  alignment: string | null;
+  hpCurrent: number;
+  hpMax: number;
+  armorClass: number;
+  conditions: string[];
+  appearance: string | null;
+  backstory: string | null;
+  playedBy: string;
+}
+
+/** One PRESENT-block entry: identity/stats line, plus appearance/backstory so
+ *  NPCs can react to what a character actually looks like without the player
+ *  having to narrate it themselves. */
+export function formatPresentCharacterLine(info: PresentCharacterInfo): string {
+  const conditionsText = info.conditions.length > 0 ? info.conditions.join(", ") : "none";
+  const alignmentText = info.alignment ? `, ${info.alignment}` : "";
+  const lines = [
+    `${info.name} (${info.speciesName} ${info.className}, ${info.backgroundName} background, level ${info.level}${alignmentText}) — HP ${info.hpCurrent}/${info.hpMax}, AC ${info.armorClass}, conditions: ${conditionsText}. Played by ${info.playedBy}.`,
+  ];
+  if (info.appearance && info.appearance.trim()) {
+    lines.push(`  Appearance: ${truncateForContext(info.appearance.trim(), APPEARANCE_MAX_CHARS)}`);
+  }
+  if (info.backstory && info.backstory.trim()) {
+    lines.push(`  Backstory: ${truncateForContext(info.backstory.trim(), BACKSTORY_MAX_CHARS)}`);
+  }
+  return lines.join("\n");
+}
+
 function buildStateBlock(campaign: Campaign): string {
   const members = getCampaignMembers(campaign.id).filter((m) => m.status === "active");
   const onlineUserIds = new Set(getOnlineUserIds(campaign.id));
@@ -19,12 +62,25 @@ function buildStateBlock(campaign: Campaign): string {
     const resolved = resolveCharacter(member.characterId);
     if (!resolved) continue;
     const sheet = computeCharacterSheet(resolved);
-    const conditionsText =
-      resolved.character.conditions.length > 0 ? resolved.character.conditions.join(", ") : "none";
-    const line = `${resolved.character.name} (${resolved.species.name} ${resolved.klass.name}, level ${resolved.character.level}) — HP ${resolved.character.hpCurrent}/${sheet.hpMax}, AC ${sheet.armorClass}, conditions: ${conditionsText}. Played by ${member.username}.`;
 
     if (onlineUserIds.has(member.userId)) {
-      present.push(line);
+      present.push(
+        formatPresentCharacterLine({
+          name: resolved.character.name,
+          speciesName: resolved.species.name,
+          className: resolved.klass.name,
+          backgroundName: resolved.background.name,
+          level: resolved.character.level,
+          alignment: resolved.character.alignment,
+          hpCurrent: resolved.character.hpCurrent,
+          hpMax: sheet.hpMax,
+          armorClass: sheet.armorClass,
+          conditions: resolved.character.conditions,
+          appearance: resolved.character.appearance,
+          backstory: resolved.character.backstory,
+          playedBy: member.username,
+        }),
+      );
     } else {
       absent.push(`${resolved.character.name} (off-screen this session)`);
     }
