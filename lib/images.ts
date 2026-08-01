@@ -47,20 +47,45 @@ export function registerImage(params: {
   return rowToImage(row);
 }
 
-/** Most recent registered image whose subject tags overlap the given tags — used as a reference for consistency. */
-export function findReferenceImage(subjectTags: string[]): RegisteredImage | null {
-  if (subjectTags.length === 0) return null;
-  const rows = db
-    .prepare("SELECT * FROM image_registry ORDER BY id DESC")
-    .all() as any[];
-  const needle = new Set(subjectTags.map((t) => t.toLowerCase()));
-  for (const row of rows) {
-    const tags: string[] = JSON.parse(row.subject_tags);
-    if (tags.some((t) => needle.has(t.toLowerCase()))) {
-      return rowToImage(row);
+/**
+ * Picks the single best reference image per tag: an uploaded portrait wins
+ * (portraits are the canonical look for a character, registered with
+ * campaign_id NULL so they apply anywhere), otherwise the newest image from
+ * this campaign that was tagged with it. Pure so it can be unit-tested
+ * without a database — findReferenceImages below just fetches the two
+ * candidate lists and hands them to this.
+ */
+export function pickBestReferenceImages(
+  tags: string[],
+  portraits: RegisteredImage[],
+  campaignImages: RegisteredImage[],
+): Map<string, RegisteredImage> {
+  const result = new Map<string, RegisteredImage>();
+  for (const tag of tags) {
+    const needle = tag.toLowerCase();
+    const portrait = portraits.find((p) => p.subjectTags.some((t) => t.toLowerCase() === needle));
+    if (portrait) {
+      result.set(tag, portrait);
+      continue;
+    }
+    const campaignMatch = campaignImages.find((img) => img.subjectTags.some((t) => t.toLowerCase() === needle));
+    if (campaignMatch) {
+      result.set(tag, campaignMatch);
     }
   }
-  return null;
+  return result;
+}
+
+/** One reference image per tag — see pickBestReferenceImages for the selection rule. */
+export function findReferenceImages(tags: string[], campaignId: number): Map<string, RegisteredImage> {
+  if (tags.length === 0) return new Map();
+  const portraits = (
+    db.prepare("SELECT * FROM image_registry WHERE kind = 'portrait' ORDER BY id DESC").all() as any[]
+  ).map(rowToImage);
+  const campaignImages = (
+    db.prepare("SELECT * FROM image_registry WHERE campaign_id = ? ORDER BY id DESC").all(campaignId) as any[]
+  ).map(rowToImage);
+  return pickBestReferenceImages(tags, portraits, campaignImages);
 }
 
 export function listCampaignImages(campaignId: number): RegisteredImage[] {

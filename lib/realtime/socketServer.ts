@@ -31,7 +31,7 @@ import { rollInitiative, nextTurn, endCombat, getCombatState } from "@/lib/engin
 import { getCampaignPresence } from "@/lib/realtime/presence";
 import { runDmTurn } from "@/lib/ai/dm";
 import type { DmContextOptions } from "@/lib/ai/context";
-import { generateCampaignImage } from "@/lib/ai/images";
+import { generateCampaignImage, detectSubjectsInText, type ImageSubject } from "@/lib/ai/images";
 import { AiError } from "@/lib/ai/openai";
 
 function triggerDmTurn(campaignId: number, options?: DmContextOptions) {
@@ -406,27 +406,41 @@ export function registerSocketHandlers(io: SocketIOServer) {
       campaignId: number,
       subject: string,
       kind: "scene" | "npc" | "map",
+      explicitSubjectNames?: string[],
     ) {
       const room = `campaign:${campaignId}`;
       io.to(room).emit("image_generating", { generating: true });
       try {
-        // If the subject names a present character, pass their portrait as a
-        // reference so generated art stays visually consistent with them.
         const members = getCampaignMembers(campaignId).filter(
-          (m) => m.status === "active" && m.characterId !== null,
+          (m) => m.status === "active" && m.characterId !== null && m.characterName,
         );
-        const matchedMember = members.find((m) =>
-          subject.toLowerCase().includes((m.characterName ?? "").toLowerCase()),
-        );
-        const subjectTags = [subject.toLowerCase()];
-        if (matchedMember?.characterName) subjectTags.push(matchedMember.characterName.toLowerCase());
+        const memberCandidates: ImageSubject[] = members.map((m) => ({
+          name: m.characterName!,
+          characterId: m.characterId!,
+        }));
+
+        let subjects: ImageSubject[];
+        if (explicitSubjectNames && explicitSubjectNames.length > 0) {
+          // The DM told us exactly who's depicted — match each name against
+          // the party so present members keep their characterId (and thus
+          // their uploaded portrait as the preferred reference).
+          subjects = explicitSubjectNames.map((name) => {
+            const member = memberCandidates.find((m) => m.name.toLowerCase() === name.toLowerCase());
+            return member ?? { name };
+          });
+        } else {
+          // Player-direct 🎨 button path: detect present party members and
+          // roster NPCs named in the free-text subject.
+          const campaign = getCampaign(campaignId);
+          const npcCandidates: ImageSubject[] = (campaign?.npcRoster ?? []).map((n) => ({ name: n.name }));
+          subjects = detectSubjectsInText(subject, [...memberCandidates, ...npcCandidates]);
+        }
 
         const { filePath } = await generateCampaignImage({
           campaignId,
           kind,
           subject,
-          subjectTags,
-          characterIdForReference: matchedMember?.characterId ?? undefined,
+          subjects,
         });
 
         emitMessage(
@@ -494,7 +508,7 @@ export function registerSocketHandlers(io: SocketIOServer) {
       setPendingImageConfirmation(campaignId, null);
       io.to(`campaign:${campaignId}`).emit("image_confirmation_requested", null);
       ack?.({ ok: true });
-      generateAndPostImage(campaignId, request.subject, request.kind);
+      generateAndPostImage(campaignId, request.subject, request.kind, request.subjects);
     });
 
     socket.on("dismiss_image_confirmation", (payload: unknown, ack?: Ack) => {

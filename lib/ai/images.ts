@@ -4,10 +4,43 @@ import { randomUUID } from "node:crypto";
 import { toFile } from "openai";
 import { openai, withRetry } from "@/lib/ai/openai";
 import { IMAGE_MODEL, IMAGE_STYLE } from "@/lib/ai/config";
-import { findReferenceImage, registerImage, type ImageKind } from "@/lib/images";
+import { findReferenceImages, registerImage, type ImageKind } from "@/lib/images";
 import { getCharacterRecord } from "@/lib/characters";
 
 const IMAGES_DIR = path.join(process.cwd(), "data", "images");
+
+/** Reference images per generation. More dilutes edit quality and adds
+ *  latency/cost without much composition benefit past a small ensemble cast. */
+const MAX_REFERENCE_IMAGES = 4;
+
+export interface ImageSubject {
+  /** Display name — used both for the subject-tag lookup and the reference manifest in the prompt. */
+  name: string;
+  /** Set for present party members so their uploaded portrait is preferred over any other reference. */
+  characterId?: number;
+}
+
+/** "Reference image N shows X — X must match…" — without this, the image
+ *  model has no way to tell which of several reference faces belongs to
+ *  which named subject once there's more than one. */
+export function buildReferenceManifest(names: string[]): string {
+  if (names.length === 0) return "";
+  const lines = names.map(
+    (name, i) =>
+      `Reference image ${i + 1} shows ${name} — ${name} in this scene must match that appearance exactly.`,
+  );
+  return `\n\n${lines.join("\n")}`;
+}
+
+/** Detects which of the given candidates (party members, NPCs) are named in
+ *  free text — word-boundary and case-insensitive, so a short name doesn't
+ *  false-positive on a partial match inside an unrelated word. */
+export function detectSubjectsInText(text: string, candidates: ImageSubject[]): ImageSubject[] {
+  return candidates.filter((c) => {
+    const escaped = c.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+  });
+}
 
 async function generateImageBuffer(params: {
   prompt: string;
@@ -24,7 +57,7 @@ async function generateImageBuffer(params: {
       openai.images.edit({
         model: IMAGE_MODEL,
         image: files,
-        prompt: `${params.prompt}\n\nThe subject must match the appearance shown in the reference image(s).`,
+        prompt: params.prompt,
       }),
     );
     const b64 = result.data?.[0]?.b64_json;
@@ -59,37 +92,53 @@ function buildPrompt(kind: ImageKind, subject: string): string {
 }
 
 /**
- * Generates one campaign image (scene, portrait, NPC, or map), automatically
- * passing a prior reference image for the same subject (or a character's
- * uploaded portrait) so recurring subjects stay visually consistent, then
- * registers the result.
+ * Generates one campaign image (scene, portrait, NPC, or map). `subjects`
+ * lists everyone depicted (party members with their characterId, NPCs and
+ * locations without) — each gets its own reference image if one exists
+ * (uploaded portrait first, otherwise the newest prior registry image for
+ * that name), so a scene with several named subjects keeps all of their
+ * established appearances consistent instead of just one. Registers the
+ * result under every subject's tag (plus the raw subject string) so the new
+ * image becomes a future reference for each of them too.
  */
 export async function generateCampaignImage(params: {
   campaignId: number;
   kind: ImageKind;
   subject: string;
-  subjectTags: string[];
-  characterIdForReference?: number;
+  subjects?: ImageSubject[];
 }): Promise<{ filePath: string; prompt: string }> {
-  const referencePaths: string[] = [];
+  const subjects = params.subjects ?? [];
+  const subjectTags = [params.subject.toLowerCase(), ...subjects.map((s) => s.name.toLowerCase())];
 
-  if (params.characterIdForReference) {
-    const character = getCharacterRecord(params.characterIdForReference);
-    if (character?.portraitPath) referencePaths.push(character.portraitPath);
-  }
-  const existingRef = findReferenceImage(params.subjectTags);
-  if (existingRef && !referencePaths.includes(existingRef.filePath)) {
-    referencePaths.push(existingRef.filePath);
+  const registryRefs = findReferenceImages(
+    subjects.map((s) => s.name),
+    params.campaignId,
+  );
+
+  const resolved: { name: string; filePath: string; isPartyMember: boolean }[] = [];
+  for (const s of subjects) {
+    const portraitPath = s.characterId ? getCharacterRecord(s.characterId)?.portraitPath : null;
+    const filePath = portraitPath ?? registryRefs.get(s.name)?.filePath;
+    if (filePath) {
+      resolved.push({ name: s.name, filePath, isPartyMember: s.characterId !== undefined });
+    }
   }
 
-  const prompt = buildPrompt(params.kind, params.subject);
-  const buffer = await generateImageBuffer({ prompt, referenceFilePaths: referencePaths });
+  // Present party members take priority over NPCs/locations when there are more references than the cap.
+  resolved.sort((a, b) => Number(b.isPartyMember) - Number(a.isPartyMember));
+  const capped = resolved.slice(0, MAX_REFERENCE_IMAGES);
+
+  const prompt = `${buildPrompt(params.kind, params.subject)}${buildReferenceManifest(capped.map((r) => r.name))}`;
+  const buffer = await generateImageBuffer({
+    prompt,
+    referenceFilePaths: capped.map((r) => r.filePath),
+  });
   const filePath = await saveGeneratedImage(buffer, params.kind);
 
   registerImage({
     campaignId: params.campaignId,
     kind: params.kind,
-    subjectTags: params.subjectTags,
+    subjectTags,
     prompt,
     filePath,
   });

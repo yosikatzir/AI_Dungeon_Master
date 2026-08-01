@@ -26,6 +26,9 @@ export interface PendingRollRequest {
 export interface PendingImageConfirmation {
   subject: string;
   kind: "scene" | "npc" | "map";
+  /** Exact names of every character/NPC/location the DM said is depicted — lets the
+   *  image pipeline pass a reference image for each one instead of guessing from `subject`. */
+  subjects?: string[];
 }
 
 export interface Campaign {

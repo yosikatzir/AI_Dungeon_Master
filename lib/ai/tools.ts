@@ -222,7 +222,15 @@ export const DM_TOOLS: ChatCompletionTool[] = [
         "Only call this if a player asked for an illustration. Asks them to confirm before any image is generated — this ends your turn.",
       parameters: {
         type: "object",
-        properties: { subject: { type: "string", description: "What the image would depict." } },
+        properties: {
+          subject: { type: "string", description: "What the image would depict." },
+          subjects: {
+            type: "array",
+            items: { type: "string" },
+            description:
+              "Exact names of every character, NPC, and named location actually depicted in the scene (e.g. present party members from the party list, NPCs from the roster). Always list everyone visible — this lets each of them keep their established look.",
+          },
+        },
         required: ["subject"],
       },
     },
@@ -396,7 +404,8 @@ export async function executeTool(
 
       case "request_image_confirmation": {
         const subject = args.subject as string;
-        const request: PendingImageConfirmation = { subject, kind: "scene" };
+        const subjects = Array.isArray(args.subjects) ? (args.subjects as string[]) : undefined;
+        const request: PendingImageConfirmation = { subject, kind: "scene", subjects };
         setPendingImageConfirmation(campaignId, request);
         return {
           resultText: "Waiting on player confirmation before generating an image.",
