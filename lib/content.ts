@@ -195,6 +195,20 @@ export function getEquipmentByIds(ids: string[]): Equipment[] {
     .map(rowToEquipment);
 }
 
+/** Case-insensitive name lookup — the AI DM refers to items by name, not internal id. */
+export function findEquipmentByName(name: string): Equipment | null {
+  const needle = name.trim().toLowerCase();
+  const row = db
+    .prepare("SELECT * FROM equipment WHERE lower(name) = ?")
+    .get(needle);
+  if (row) return rowToEquipment(row);
+
+  const fuzzy = db
+    .prepare("SELECT * FROM equipment WHERE lower(name) LIKE ? LIMIT 1")
+    .get(`%${needle}%`);
+  return fuzzy ? rowToEquipment(fuzzy) : null;
+}
+
 function rowToMonster(row: any): Monster {
   return {
     id: row.id,

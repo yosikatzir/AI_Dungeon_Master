@@ -12,7 +12,8 @@ full spec).
 - **Phase 2 (SRD 5.2 rules engine, seed content, character builder) — done.**
 - **Phase 3 (campaigns, realtime chat, presence) — done.**
 - **Phase 4 (dice, game engine, admin dice bias) — done.**
-- Phases 5–7 (the AI DM, voice, images, polish) — not yet implemented.
+- **Phase 5 (the AI DM: tool-calling, streaming narration, campaign memory) — done.**
+- Phases 6–7 (voice, images, polish) — not yet implemented.
 
 ## Tech stack
 
@@ -109,10 +110,10 @@ All dice rolls run through `lib/rules/dice.ts`, using `node:crypto`'s
 `randomInt` (not `Math.random`) for genuine fairness. `apply_damage`,
 `apply_healing`, `consume_spell_slot`, `grant_item`/`remove_item`,
 `award_xp`, and condition tracking live in `lib/engine/mutations.ts` as
-plain validated functions — these are what Phase 5's AI DM tool-calling
-will wire up to the model; for now they're driven by the player's own
-in-session actions (damage/heal/spell-slot buttons, dice tray) over
-Socket.IO, broadcasting live to everyone in the campaign room.
+plain validated functions. They're driven two ways: directly by a player's
+own in-session actions (damage/heal/spell-slot buttons, dice tray) over
+Socket.IO, and by the AI DM's tool calls (Phase 5) — either path broadcasts
+live to everyone in the campaign room.
 
 The admin-only secret dice bias (`yosikatzir` → Admin settings → Dice bias)
 sets a per-character bias applied strictly inside `rollBiasedD20` — the
@@ -121,17 +122,34 @@ and `RollOutcome` (what actually reaches the client, gets persisted, and
 gets broadcast) never carries bias information. The displayed die is itself
 the post-bias value, so it's indistinguishable from an honest roll.
 
-## How sessions & campaign memory will work
+## The AI DM
 
-Not yet implemented (Phase 5). The design: each DM request is assembled from
-a system prompt, a structured campaign-state block, a rolling summary, an
-NPC roster, and the last ~30 messages — never the full history. Every ~40
-messages, a background call folds older messages into the summary. See the
-spec doc for details.
+`lib/ai/dm.ts` runs one "DM turn" per player message or dice roll: assemble
+context (`lib/ai/context.ts`), call the model with the tool schema
+(`lib/ai/tools.ts`), execute any tool calls against the game engine, loop
+until the model has nothing more to do mechanically, then persist and
+stream the narration to the room. The system prompt is its own file
+(`prompts/dm-system.ts`).
 
-Campaign chat itself (Phase 3) already works this way infrastructurally: a
-Socket.IO room per campaign, membership + message history in SQLite, and
-live presence tracked in-memory per server process.
+Context is never the full history: each call gets the system prompt, a
+structured campaign-state block (party stats, who's present vs. off-screen,
+current scene, active quests, initiative if in combat), a rolling summary,
+an NPC roster, and the last ~30 messages verbatim. Every 40 messages,
+`lib/ai/summarize.ts` makes a background call that folds the new stretch
+into the summary and NPC roster — verified live: after a few exchanges the
+DM correctly recalled a detail (an NPC's appearance) that had scrolled out
+of the raw window and existed only in the compressed summary.
+
+`request_roll` and `request_image_confirmation` are special: they end the
+DM's turn immediately rather than resolving in-line, since they require a
+real player action (clicking a die, confirming an image) that can't happen
+synchronously inside one model call. The dice tray highlights itself with
+the exact roll the DM asked for; once the player rolls (or Phase 6 wires up
+confirmation), a fresh DM turn picks up automatically.
+
+Campaign chat infrastructure (Phase 3): a Socket.IO room per campaign,
+membership + message history in SQLite, and live presence tracked
+in-memory per server process.
 
 ## Moving to AWS later
 

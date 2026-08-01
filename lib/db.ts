@@ -206,6 +206,16 @@ db.exec(`
     premise TEXT,
     opening_scene TEXT,
     status TEXT NOT NULL DEFAULT 'active', -- 'active' | 'archived'
+    -- AI DM memory (Phase 5): never send full history to the model — this is
+    -- the compressed state that stands in for everything older than the last
+    -- ~30 messages.
+    summary TEXT NOT NULL DEFAULT '',
+    npc_roster TEXT NOT NULL DEFAULT '[]', -- JSON [{ name, description, disposition }]
+    plot_log TEXT NOT NULL DEFAULT '[]', -- JSON [{ summary, createdAt }]
+    current_scene TEXT NOT NULL DEFAULT '',
+    active_quests TEXT NOT NULL DEFAULT '[]', -- JSON [string]
+    last_summarized_message_id INTEGER NOT NULL DEFAULT 0,
+    pending_roll_request TEXT, -- JSON { characterId, characterName, rollType, ability, skill, dc, reason } | NULL
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );

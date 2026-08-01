@@ -4,6 +4,8 @@ import {
   getMembership,
   getCampaignMembers,
   addMessage,
+  getCampaign,
+  setPendingRollRequest,
   type CampaignMessage,
 } from "@/lib/campaigns";
 import { getCharacterRecord } from "@/lib/characters";
@@ -24,6 +26,14 @@ import {
   EngineValidationError,
 } from "@/lib/engine/mutations";
 import { rollInitiative, nextTurn, endCombat, getCombatState } from "@/lib/engine/combat";
+import { getCampaignPresence } from "@/lib/realtime/presence";
+import { runDmTurn } from "@/lib/ai/dm";
+
+function triggerDmTurn(campaignId: number) {
+  runDmTurn(campaignId).catch((err) => {
+    console.error(`DM turn failed for campaign ${campaignId}:`, err);
+  });
+}
 
 interface SocketData {
   userId: number;
@@ -31,10 +41,6 @@ interface SocketData {
 }
 
 type Ack = (res: { ok: true } | { error: string }) => void;
-
-// In-memory only — fine for a single self-hosted process; presence resets on restart.
-// campaignId -> userId -> set of live socket ids for that user
-const presence = new Map<number, Map<number, Set<string>>>();
 
 function getCookieValue(cookieHeader: string | undefined, name: string): string | null {
   if (!cookieHeader) return null;
@@ -115,11 +121,7 @@ export function registerSocketHandlers(io: SocketIOServer) {
       joinedCampaignId = campaignId;
       socket.join(`campaign:${campaignId}`);
 
-      let campaignPresence = presence.get(campaignId);
-      if (!campaignPresence) {
-        campaignPresence = new Map();
-        presence.set(campaignId, campaignPresence);
-      }
+      const campaignPresence = getCampaignPresence(campaignId);
       const wasOffline = !campaignPresence.has(data(socket).userId);
       const sockets = campaignPresence.get(data(socket).userId) ?? new Set<string>();
       sockets.add(socket.id);
@@ -179,6 +181,14 @@ export function registerSocketHandlers(io: SocketIOServer) {
             rollData: outcome,
           }),
         );
+
+        const campaign = getCampaign(campaignId);
+        if (campaign?.pendingRollRequest?.characterId === characterId) {
+          setPendingRollRequest(campaignId, null);
+          io.to(`campaign:${campaignId}`).emit("roll_requested", null);
+        }
+        triggerDmTurn(campaignId);
+
         ack?.({ ok: true });
       } catch (err) {
         ack?.({ error: err instanceof EngineValidationError ? err.message : "Roll failed" });
@@ -407,13 +417,13 @@ export function registerSocketHandlers(io: SocketIOServer) {
           content,
         }),
       );
+      triggerDmTurn(campaignId);
       ack?.({ ok: true });
     });
 
     socket.on("disconnect", () => {
       if (joinedCampaignId === null) return;
-      const campaignPresence = presence.get(joinedCampaignId);
-      if (!campaignPresence) return;
+      const campaignPresence = getCampaignPresence(joinedCampaignId);
 
       const sockets = campaignPresence.get(data(socket).userId);
       if (!sockets) return;

@@ -16,6 +16,7 @@ async function main() {
   const { default: next } = await import("next");
   const { Server: SocketIOServer } = await import("socket.io");
   const { registerSocketHandlers } = await import("./lib/realtime/socketServer");
+  const { setIoInstance } = await import("./lib/realtime/ioInstance");
 
   const dev = process.env.NODE_ENV !== "production";
   const port = Number(process.env.PORT) || 3000;
@@ -29,6 +30,7 @@ async function main() {
   const io = new SocketIOServer(httpServer, {
     path: "/api/socket",
   });
+  setIoInstance(io);
   registerSocketHandlers(io);
 
   httpServer.listen(port, () => {

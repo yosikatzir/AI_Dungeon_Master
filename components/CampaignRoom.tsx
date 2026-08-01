@@ -4,7 +4,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import type { Socket } from "socket.io-client";
 import { connectCampaignSocket } from "@/lib/realtime/socketClient";
-import type { Campaign, CampaignMember, CampaignMessage } from "@/lib/campaigns";
+import type { Campaign, CampaignMember, CampaignMessage, PendingRollRequest } from "@/lib/campaigns";
 import DiceTray, { type RollPurpose } from "@/components/DiceTray";
 import CharacterQuickPanel, { type QuickPanelCharacter } from "@/components/CharacterQuickPanel";
 import InitiativeTracker, { type CombatStateProps } from "@/components/InitiativeTracker";
@@ -43,6 +43,11 @@ export default function CampaignRoom({
   const [joined, setJoined] = useState(myMembership?.status === "active");
   const [quickCharacter, setQuickCharacter] = useState<QuickPanelCharacter | null>(null);
   const [combat, setCombat] = useState<CombatStateProps>(EMPTY_COMBAT);
+  const [dmTyping, setDmTyping] = useState(false);
+  const [streamingMessage, setStreamingMessage] = useState<{ id: number; content: string } | null>(null);
+  const [pendingRollRequest, setPendingRollRequest] = useState<PendingRollRequest | null>(
+    campaign.pendingRollRequest,
+  );
 
   const myCharacterId = myMembership?.characterId ?? null;
 
@@ -100,6 +105,29 @@ export default function CampaignRoom({
       if (payload.characterId === myCharacterId) refreshQuickCharacter();
     });
 
+    socket.on("dm_typing", (payload: { typing: boolean }) => {
+      setDmTyping(payload.typing);
+    });
+
+    socket.on("dm_stream_start", (payload: { id: number }) => {
+      setStreamingMessage({ id: payload.id, content: "" });
+    });
+
+    socket.on("dm_stream_chunk", (payload: { id: number; text: string }) => {
+      setStreamingMessage({ id: payload.id, content: payload.text });
+    });
+
+    socket.on("dm_stream_end", (payload: { message: CampaignMessage }) => {
+      setStreamingMessage(null);
+      setMessages((prev) =>
+        prev.some((m) => m.id === payload.message.id) ? prev : [...prev, payload.message],
+      );
+    });
+
+    socket.on("roll_requested", (request: PendingRollRequest | null) => {
+      setPendingRollRequest(request);
+    });
+
     if (joined) {
       socket.emit("join_campaign", campaign.id, (res: { ok: true } | { error: string }) => {
         if ("error" in res) setConnectionError(res.error);
@@ -113,7 +141,7 @@ export default function CampaignRoom({
 
   useEffect(() => {
     logRef.current?.scrollTo({ top: logRef.current.scrollHeight });
-  }, [messages]);
+  }, [messages, streamingMessage]);
 
   function emit(event: string, payload: unknown) {
     socketRef.current?.emit(event, payload, (res: { ok: true } | { error: string }) => {
@@ -179,6 +207,9 @@ export default function CampaignRoom({
     );
   }
 
+  const myPendingRequest =
+    pendingRollRequest && pendingRollRequest.characterId === myCharacterId ? pendingRollRequest : null;
+
   return (
     <main className="mx-auto flex min-h-screen max-w-6xl gap-4 px-6 py-6">
       <aside className="w-56 shrink-0 border-r border-amber-800/30 pr-4">
@@ -223,31 +254,52 @@ export default function CampaignRoom({
 
       <section className="flex flex-1 flex-col">
         <div ref={logRef} className="flex-1 overflow-y-auto rounded border border-amber-800/30 p-4">
-          {messages.length === 0 && (
+          {messages.length === 0 && !streamingMessage && (
             <p className="text-sm text-amber-200/40">No messages yet. Say hello!</p>
           )}
-          <div className="flex flex-col gap-2">
-            {messages.map((m) => (
-              <div key={m.id} className="text-sm">
-                {m.senderType === "system" ? (
-                  <span className="italic text-amber-200/40">{m.content}</span>
-                ) : m.senderType === "roll" ? (
-                  <span className="text-purple-300">🎲 {m.content}</span>
-                ) : (
-                  <>
-                    <span className="text-amber-300">
-                      {m.characterName ?? m.username ?? "Unknown"}:
-                    </span>{" "}
-                    <span className="text-amber-100">{m.content}</span>
-                  </>
-                )}
+          <div className="flex flex-col gap-3">
+            {messages.map((m) =>
+              streamingMessage?.id === m.id ? null : (
+                <div key={m.id} className="text-sm">
+                  {m.senderType === "system" ? (
+                    <span className="italic text-amber-200/40">{m.content}</span>
+                  ) : m.senderType === "roll" ? (
+                    <span className="text-purple-300">🎲 {m.content}</span>
+                  ) : m.senderType === "dm" ? (
+                    <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 font-serif leading-relaxed text-amber-100/90">
+                      {m.content}
+                    </div>
+                  ) : (
+                    <>
+                      <span className="text-amber-300">
+                        {m.characterName ?? m.username ?? "Unknown"}:
+                      </span>{" "}
+                      <span className="text-amber-100">{m.content}</span>
+                    </>
+                  )}
+                </div>
+              ),
+            )}
+
+            {streamingMessage && (
+              <div className="rounded-lg border border-amber-900/40 bg-amber-950/20 p-3 font-serif leading-relaxed text-amber-100/90">
+                {streamingMessage.content}
+                <span className="animate-pulse">▍</span>
               </div>
-            ))}
+            )}
+
+            {dmTyping && !streamingMessage && (
+              <p className="text-xs italic text-amber-200/40">The DM is thinking…</p>
+            )}
           </div>
         </div>
 
         <div className="mt-3">
-          <DiceTray hasCharacter={myCharacterId !== null} onRoll={handleRoll} />
+          <DiceTray
+            hasCharacter={myCharacterId !== null}
+            pendingRequest={myPendingRequest}
+            onRoll={handleRoll}
+          />
         </div>
 
         <div className="mt-3 flex gap-2">

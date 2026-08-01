@@ -2,6 +2,27 @@ import db from "@/lib/db";
 import type { CreateCampaignInput } from "@/lib/validation/campaign";
 import type { RollOutcome } from "@/lib/engine/rolls";
 
+export interface NpcRosterEntry {
+  name: string;
+  description: string;
+  disposition: string;
+}
+
+export interface PlotLogEntry {
+  summary: string;
+  createdAt: string;
+}
+
+export interface PendingRollRequest {
+  characterId: number;
+  characterName: string;
+  rollType: "ability_check" | "saving_throw" | "skill_check" | "attack";
+  ability?: string;
+  skill?: string;
+  dc?: number;
+  reason: string;
+}
+
 export interface Campaign {
   id: number;
   name: string;
@@ -11,6 +32,13 @@ export interface Campaign {
   premise: string | null;
   openingScene: string | null;
   status: "active" | "archived";
+  summary: string;
+  npcRoster: NpcRosterEntry[];
+  plotLog: PlotLogEntry[];
+  currentScene: string;
+  activeQuests: string[];
+  lastSummarizedMessageId: number;
+  pendingRollRequest: PendingRollRequest | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -49,6 +77,13 @@ function rowToCampaign(row: any): Campaign {
     premise: row.premise,
     openingScene: row.opening_scene,
     status: row.status,
+    summary: row.summary,
+    npcRoster: JSON.parse(row.npc_roster),
+    plotLog: JSON.parse(row.plot_log),
+    currentScene: row.current_scene,
+    activeQuests: JSON.parse(row.active_quests),
+    lastSummarizedMessageId: row.last_summarized_message_id,
+    pendingRollRequest: row.pending_roll_request ? JSON.parse(row.pending_roll_request) : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -219,4 +254,105 @@ export function addMessage(params: {
     .get(id) as any;
 
   return rowToMessage(row);
+}
+
+/** Messages strictly after a given id, oldest first — used to feed the summarizer only what it hasn't seen. */
+export function listMessagesAfter(campaignId: number, afterId: number): CampaignMessage[] {
+  const rows = db
+    .prepare(
+      `SELECT cmsg.*, u.username, c.name AS character_name
+       FROM campaign_messages cmsg
+       LEFT JOIN users u ON u.id = cmsg.user_id
+       LEFT JOIN characters c ON c.id = cmsg.character_id
+       WHERE cmsg.campaign_id = ? AND cmsg.id > ?
+       ORDER BY cmsg.id ASC`,
+    )
+    .all(campaignId, afterId) as any[];
+  return rows.map(rowToMessage);
+}
+
+export function countMessages(campaignId: number): number {
+  const row = db
+    .prepare("SELECT COUNT(*) AS n FROM campaign_messages WHERE campaign_id = ?")
+    .get(campaignId) as { n: number };
+  return row.n;
+}
+
+export function setCampaignPremise(
+  campaignId: number,
+  params: { premise: string; openingScene: string; currentScene: string },
+): void {
+  db.prepare(
+    `UPDATE campaigns SET premise = ?, opening_scene = ?, current_scene = ?, updated_at = datetime('now')
+     WHERE id = ?`,
+  ).run(params.premise, params.openingScene, params.currentScene, campaignId);
+}
+
+export function updateCampaignMemory(
+  campaignId: number,
+  patch: {
+    summary?: string;
+    npcRoster?: NpcRosterEntry[];
+    plotLog?: PlotLogEntry[];
+    currentScene?: string;
+    activeQuests?: string[];
+    lastSummarizedMessageId?: number;
+  },
+): void {
+  const fields: string[] = [];
+  const values: Record<string, unknown> = { id: campaignId };
+
+  if (patch.summary !== undefined) {
+    fields.push("summary = @summary");
+    values.summary = patch.summary;
+  }
+  if (patch.npcRoster !== undefined) {
+    fields.push("npc_roster = @npcRoster");
+    values.npcRoster = JSON.stringify(patch.npcRoster);
+  }
+  if (patch.plotLog !== undefined) {
+    fields.push("plot_log = @plotLog");
+    values.plotLog = JSON.stringify(patch.plotLog);
+  }
+  if (patch.currentScene !== undefined) {
+    fields.push("current_scene = @currentScene");
+    values.currentScene = patch.currentScene;
+  }
+  if (patch.activeQuests !== undefined) {
+    fields.push("active_quests = @activeQuests");
+    values.activeQuests = JSON.stringify(patch.activeQuests);
+  }
+  if (patch.lastSummarizedMessageId !== undefined) {
+    fields.push("last_summarized_message_id = @lastSummarizedMessageId");
+    values.lastSummarizedMessageId = patch.lastSummarizedMessageId;
+  }
+  if (fields.length === 0) return;
+  fields.push("updated_at = datetime('now')");
+
+  db.prepare(`UPDATE campaigns SET ${fields.join(", ")} WHERE id = @id`).run(values);
+}
+
+export function setPendingRollRequest(
+  campaignId: number,
+  request: PendingRollRequest | null,
+): void {
+  db.prepare(
+    "UPDATE campaigns SET pending_roll_request = ?, updated_at = datetime('now') WHERE id = ?",
+  ).run(request ? JSON.stringify(request) : null, campaignId);
+}
+
+/** Case-insensitive match of a name the model used against present campaign members' characters. */
+export function resolveCharacterInCampaign(
+  campaignId: number,
+  characterName: string,
+): CampaignMember | null {
+  const needle = characterName.trim().toLowerCase();
+  const members = getCampaignMembers(campaignId).filter(
+    (m) => m.status === "active" && m.characterId !== null,
+  );
+  return (
+    members.find((m) => m.characterName?.toLowerCase() === needle) ??
+    members.find((m) => m.characterName?.toLowerCase().includes(needle)) ??
+    null
+  );
 }
