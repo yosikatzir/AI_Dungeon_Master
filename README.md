@@ -15,6 +15,7 @@ full spec).
 - **Phase 5 (the AI DM: tool-calling, streaming narration, campaign memory) — done.**
 - **Phase 6 (voice input, AI image generation with a consistency registry) — done.**
 - **Phase 7 (polish: mobile layout, message styling, empty states) — done.**
+- **Phase 8 (character management, DM appearance awareness, table-talk channel, multi-reference images) — done.**
 
 ## Tech stack
 
@@ -102,8 +103,20 @@ npm test
 Unit tests (via `vitest`) cover the 5e rules engine (ability scores, HP,
 spell slots, AC/attack/save/skill math — including an end-to-end legal
 level-1 Fighter and Wizard built from the real seeded content), the dice
-engine (RNG, the admin bias function, DC/AC resolution, nat 20/1 rules), and
-a referential-integrity suite over all the seeded SRD content.
+engine (RNG, the admin bias function, DC/AC resolution, nat 20/1 rules), a
+referential-integrity suite over all the seeded SRD content, and pure
+DM-context/image-composition helpers (appearance formatting, the meta DM's
+restricted toolset, reference-image selection, subject name detection).
+`vitest.config.ts` loads `.env.local` the same way `server.ts` does, since
+some of these transitively import `lib/ai/openai.ts`, which requires
+`OPENAI_API_KEY` at import time.
+
+Nothing in the suite touches the real `./data/app.db` beyond opening a
+connection and ensuring the schema exists (harmless and idempotent) —
+anything that would actually insert/update/delete rows (character
+creation, campaign messages, image registration, etc.) is verified live in
+the browser instead, since this project has no isolated test-database
+setup.
 
 ## Dice, the game engine, and admin dice bias
 
@@ -123,6 +136,28 @@ and `RollOutcome` (what actually reaches the client, gets persisted, and
 gets broadcast) never carries bias information. The displayed die is itself
 the post-bias value, so it's indistinguishable from an honest roll.
 
+## Character management
+
+A character's identity fields — name, alignment, appearance, backstory —
+are editable anytime from the character sheet (`CharacterIdentityEditor`);
+they don't touch rules math. Changing the build itself (species, class,
+background, abilities, skills, spells) is only allowed for a level-1
+character with no active campaign membership (`canRebuildCharacter` in
+`lib/characters.ts`) — a mid-campaign class swap would break both the
+fiction and the mechanics already in play. A rebuild
+(`/characters/[id]/edit`) reuses `CharacterBuilder` but starts species
+through spells over from scratch: reconstructing the original base scores
+and ability-bonus split from the stored final values isn't possible, so a
+rebuild is an intentional do-over rather than a pre-filled edit; identity
+fields carry over.
+
+Deleting a character (`DeleteCharacterButton`, type-the-name confirm) is a
+soft delete — `characters.deleted_at` — so chat history and old roll data
+still resolve the character's name correctly. If the character is
+currently enrolled in any active campaign, deleting sets that membership to
+`'left'` and posts a "has left the party" system message to the room, the
+same as a normal drop-out.
+
 ## The AI DM
 
 `lib/ai/dm.ts` runs one "DM turn" per player message or dice roll: assemble
@@ -141,6 +176,17 @@ into the summary and NPC roster — verified live: after a few exchanges the
 DM correctly recalled a detail (an NPC's appearance) that had scrolled out
 of the raw window and existed only in the compressed summary.
 
+Each present character's line in the state block (`lib/ai/context.ts`,
+`formatPresentCharacterLine`) also carries their background, alignment, and
+— when the player filled them in — appearance and a backstory hook (both
+truncated so a full party doesn't blow the context budget every turn). The
+system prompt tells the DM that NPCs react to what they can see, not just
+what a player types. Verified live: an orc with a "towering, imposing"
+appearance and an elf with a "delicate, graceful" one approached the same
+NPC with the identical line of dialogue in otherwise-identical opening
+scenes, and got visibly different reactions grounded in the appearance
+text, with neither player describing themselves in chat.
+
 `request_roll` and `request_image_confirmation` are special: they end the
 DM's turn immediately rather than resolving in-line, since they require a
 real player action (clicking a die, confirming an image) that can't happen
@@ -152,6 +198,28 @@ room; confirming triggers generation.
 Campaign chat infrastructure (Phase 3): a Socket.IO room per campaign,
 membership + message history in SQLite, and live presence tracked
 in-memory per server process.
+
+### Table talk (out-of-character channel)
+
+Every campaign has a second, out-of-character channel alongside the story
+(`campaign_messages.channel`, `'story' | 'meta'`) — a "Story / Table" toggle
+in `CampaignRoom` with an unread badge on whichever one isn't active. Table
+talk is for rules questions, planning, or just chatting with the DM without
+advancing the plot: plain messages between players never call the model;
+only an explicit "Ask the DM" button triggers a meta DM turn.
+
+The meta DM (`buildMetaSystemPrompt` in `prompts/dm-system.ts`) is the same
+DM stepping out of character, and can only call one tool —
+`log_plot_event` (`META_DM_TOOLS` in `lib/ai/tools.ts`) — so it can make and
+remember rulings but can't touch HP, items, XP, or anything else in the
+story. A ruling logged this way reaches the story two ways: the plot log is
+already injected into every story turn, and the story context additionally
+gets the last ~10 meta messages as a tagged "honor any DM rulings made
+here" block. Verified live: asked the meta DM (out of character) to rule
+that a character already knew an NPC from a past visit; the ruling landed
+in the campaign's plot log via `log_plot_event`, and the very next story
+message got a reply built on "the warmth of recognition... fond memories of
+your last visit" — unprompted, from context alone.
 
 ## Voice and images
 
@@ -167,23 +235,36 @@ fixed style constant (`IMAGE_STYLE` in `lib/ai/config.ts`) to every prompt
 so campaign art stays visually consistent, with maps using their own
 parchment-map prompt scaffolding instead. Every uploaded portrait and
 generated image is logged in `image_registry`
-(`lib/images.ts`), tagged by subject (character name, NPC name, location);
-generating a new image for a subject that already has one automatically
-passes the prior image (or a character's uploaded portrait) to
-`images.edit` as a reference, so recurring subjects keep the same look.
+(`lib/images.ts`), tagged by subject (character name, NPC name, location).
 Two request paths, both verified live: the "🎨 Illustrate this" button
 (direct, player-authored prompt) and the DM recognizing a natural-language
 request in chat and calling `request_image_confirmation`, which the player
 then confirms with one click before anything generates. A per-campaign
 gallery lives at `/campaigns/[id]/gallery`.
 
-Deviation: reference-image consistency (passing a prior image back into
-`images.edit` for a repeat subject) is implemented and exercised by the
-same code path as every generation, but wasn't separately verified with a
-side-by-side comparison screenshot — that would need a second paid
-generation of the same subject purely to prove it, which felt like
-spending real API cost to re-confirm code that's already been read and
-is structurally identical to the verified first-generation path.
+**Multi-reference composition**: a scene can depict several established
+subjects at once — the DM lists everyone actually present in `subjects`
+when calling `request_image_confirmation` (its exact party members and NPC
+roster names; the 🎨-button path instead detects them with a word-boundary
+name match, `detectSubjectsInText`, against the same candidates). Each named
+subject gets its own reference file — an uploaded portrait first, otherwise
+the newest registered image tagged with that name (`findReferenceImages` /
+`pickBestReferenceImages` in `lib/images.ts`) — capped at 4 references,
+present party members prioritized over NPCs/locations. The prompt sent to
+`images.edit` includes a manifest ("Reference image 1 shows Kara — Kara in
+this scene must match that appearance exactly...") so the model can map
+several reference faces to the right names instead of guessing; the
+generated image is then registered under every subject's tag, becoming a
+future reference for each of them.
+
+Deviation: the actual multi-reference generation call wasn't run live (real
+API cost) — verified everything up to that boundary instead: unit tests
+for the reference-selection and name-detection logic, and a live dry run
+where the DM was asked to illustrate a scene with one party member and two
+NPCs present; the resulting `pending_image_confirmation` row was inspected
+directly and confirmed the DM populated `subjects` correctly before the
+request was dismissed rather than confirmed. Trying an actual multi-subject
+generation is left for a real session.
 
 ## Mobile layout and polish
 
