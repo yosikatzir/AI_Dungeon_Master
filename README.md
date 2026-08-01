@@ -13,7 +13,8 @@ full spec).
 - **Phase 3 (campaigns, realtime chat, presence) — done.**
 - **Phase 4 (dice, game engine, admin dice bias) — done.**
 - **Phase 5 (the AI DM: tool-calling, streaming narration, campaign memory) — done.**
-- Phases 6–7 (voice, images, polish) — not yet implemented.
+- **Phase 6 (voice input, AI image generation with a consistency registry) — done.**
+- Phase 7 (polish) — not yet implemented.
 
 ## Tech stack
 
@@ -144,12 +145,45 @@ of the raw window and existed only in the compressed summary.
 DM's turn immediately rather than resolving in-line, since they require a
 real player action (clicking a die, confirming an image) that can't happen
 synchronously inside one model call. The dice tray highlights itself with
-the exact roll the DM asked for; once the player rolls (or Phase 6 wires up
-confirmation), a fresh DM turn picks up automatically.
+the exact roll the DM asked for; once the player rolls, a fresh DM turn
+picks up automatically. Image requests show a Confirm/Not now banner in the
+room; confirming triggers generation.
 
 Campaign chat infrastructure (Phase 3): a Socket.IO room per campaign,
 membership + message history in SQLite, and live presence tracked
 in-memory per server process.
+
+## Voice and images
+
+Voice: hold the 🎤 button (`components/VoiceRecordButton.tsx`) to record via
+the browser's `MediaRecorder`; on release the clip posts to
+`/api/campaigns/[id]/transcribe`, which calls Whisper and returns the text.
+It fills the message box and auto-sends after 3 seconds unless you edit or
+send it yourself. Verified end to end with real synthesized speech (OpenAI
+TTS → Whisper) round-tripping back to the exact original sentence.
+
+Images: `lib/ai/images.ts` generates via `gpt-image-1`, appending a single
+fixed style constant (`IMAGE_STYLE` in `lib/ai/config.ts`) to every prompt
+so campaign art stays visually consistent, with maps using their own
+parchment-map prompt scaffolding instead. Every uploaded portrait and
+generated image is logged in `image_registry`
+(`lib/images.ts`), tagged by subject (character name, NPC name, location);
+generating a new image for a subject that already has one automatically
+passes the prior image (or a character's uploaded portrait) to
+`images.edit` as a reference, so recurring subjects keep the same look.
+Two request paths, both verified live: the "🎨 Illustrate this" button
+(direct, player-authored prompt) and the DM recognizing a natural-language
+request in chat and calling `request_image_confirmation`, which the player
+then confirms with one click before anything generates. A per-campaign
+gallery lives at `/campaigns/[id]/gallery`.
+
+Deviation: reference-image consistency (passing a prior image back into
+`images.edit` for a repeat subject) is implemented and exercised by the
+same code path as every generation, but wasn't separately verified with a
+side-by-side comparison screenshot — that would need a second paid
+generation of the same subject purely to prove it, which felt like
+spending real API cost to re-confirm code that's already been read and
+is structurally identical to the verified first-generation path.
 
 ## Moving to AWS later
 

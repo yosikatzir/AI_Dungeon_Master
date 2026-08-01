@@ -23,6 +23,11 @@ export interface PendingRollRequest {
   reason: string;
 }
 
+export interface PendingImageConfirmation {
+  subject: string;
+  kind: "scene" | "npc" | "map";
+}
+
 export interface Campaign {
   id: number;
   name: string;
@@ -39,6 +44,7 @@ export interface Campaign {
   activeQuests: string[];
   lastSummarizedMessageId: number;
   pendingRollRequest: PendingRollRequest | null;
+  pendingImageConfirmation: PendingImageConfirmation | null;
   createdAt: string;
   updatedAt: string;
 }
@@ -64,6 +70,7 @@ export interface CampaignMessage {
   characterName: string | null;
   content: string;
   rollData: RollOutcome | null;
+  imagePath: string | null;
   createdAt: string;
 }
 
@@ -84,6 +91,9 @@ function rowToCampaign(row: any): Campaign {
     activeQuests: JSON.parse(row.active_quests),
     lastSummarizedMessageId: row.last_summarized_message_id,
     pendingRollRequest: row.pending_roll_request ? JSON.parse(row.pending_roll_request) : null,
+    pendingImageConfirmation: row.pending_image_confirmation
+      ? JSON.parse(row.pending_image_confirmation)
+      : null,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };
@@ -216,6 +226,7 @@ function rowToMessage(row: any): CampaignMessage {
     characterName: row.character_name,
     content: row.content,
     rollData: row.roll_data ? JSON.parse(row.roll_data) : null,
+    imagePath: row.image_path,
     createdAt: row.created_at,
   };
 }
@@ -227,11 +238,12 @@ export function addMessage(params: {
   characterId: number | null;
   content: string;
   rollData?: RollOutcome;
+  imagePath?: string;
 }): CampaignMessage {
   const result = db
     .prepare(
-      `INSERT INTO campaign_messages (campaign_id, sender_type, user_id, character_id, content, roll_data)
-       VALUES (?, ?, ?, ?, ?, ?)`,
+      `INSERT INTO campaign_messages (campaign_id, sender_type, user_id, character_id, content, roll_data, image_path)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`,
     )
     .run(
       params.campaignId,
@@ -240,6 +252,7 @@ export function addMessage(params: {
       params.characterId,
       params.content,
       params.rollData ? JSON.stringify(params.rollData) : null,
+      params.imagePath ?? null,
     );
 
   const id = Number(result.lastInsertRowid);
@@ -338,6 +351,15 @@ export function setPendingRollRequest(
 ): void {
   db.prepare(
     "UPDATE campaigns SET pending_roll_request = ?, updated_at = datetime('now') WHERE id = ?",
+  ).run(request ? JSON.stringify(request) : null, campaignId);
+}
+
+export function setPendingImageConfirmation(
+  campaignId: number,
+  request: PendingImageConfirmation | null,
+): void {
+  db.prepare(
+    "UPDATE campaigns SET pending_image_confirmation = ?, updated_at = datetime('now') WHERE id = ?",
   ).run(request ? JSON.stringify(request) : null, campaignId);
 }
 

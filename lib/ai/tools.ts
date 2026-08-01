@@ -3,8 +3,10 @@ import {
   resolveCharacterInCampaign,
   updateCampaignMemory,
   setPendingRollRequest,
+  setPendingImageConfirmation,
   getCampaign,
   type PendingRollRequest,
+  type PendingImageConfirmation,
 } from "@/lib/campaigns";
 import { findEquipmentByName } from "@/lib/content";
 import {
@@ -31,6 +33,8 @@ export interface ToolExecutionResult {
   endTurn?: boolean;
   /** request_roll only: broadcast structurally so the requested player's dice tray can highlight itself. */
   rollRequest?: PendingRollRequest;
+  /** request_image_confirmation only: broadcast structurally so the room can show a confirm button. */
+  imageConfirmation?: PendingImageConfirmation;
 }
 
 const characterNameProp = {
@@ -384,10 +388,13 @@ export async function executeTool(
 
       case "request_image_confirmation": {
         const subject = args.subject as string;
+        const request: PendingImageConfirmation = { subject, kind: "scene" };
+        setPendingImageConfirmation(campaignId, request);
         return {
           resultText: "Waiting on player confirmation before generating an image.",
-          broadcastContent: `The DM offers to illustrate: ${subject}. Click "🎨 Illustrate this" to confirm.`,
+          broadcastContent: `The DM offers to illustrate: ${subject}.`,
           endTurn: true,
+          imageConfirmation: request,
         };
       }
 

@@ -35,3 +35,9 @@ export const longRestSchema = z.object({
 export const campaignIdSchema = z.object({
   campaignId: z.number().int().positive(),
 });
+
+export const requestImageSchema = z.object({
+  campaignId: z.number().int().positive(),
+  subject: z.string().trim().min(1).max(500),
+  kind: z.enum(["scene", "npc", "map"]).default("scene"),
+});

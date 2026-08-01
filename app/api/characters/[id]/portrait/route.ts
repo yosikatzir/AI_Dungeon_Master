@@ -4,6 +4,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { getCurrentUser } from "@/lib/auth";
 import { getCharacterRecord, setCharacterPortrait } from "@/lib/characters";
+import { registerImage } from "@/lib/images";
 
 const ALLOWED_TYPES: Record<string, string> = {
   "image/jpeg": "jpg",
@@ -52,6 +53,16 @@ export async function POST(
   await fs.writeFile(path.join(imagesDir, filename), buffer);
 
   setCharacterPortrait(id, filename);
+
+  // Registered as the character's canonical visual reference — later scene/NPC
+  // art involving them gets this passed to the image model for consistency.
+  registerImage({
+    campaignId: null,
+    kind: "portrait",
+    subjectTags: [character.name.toLowerCase()],
+    prompt: "(uploaded by player)",
+    filePath: filename,
+  });
 
   return NextResponse.json({ ok: true, portraitPath: filename });
 }

@@ -2,12 +2,21 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
+import Link from "next/link";
 import type { Socket } from "socket.io-client";
 import { connectCampaignSocket } from "@/lib/realtime/socketClient";
-import type { Campaign, CampaignMember, CampaignMessage, PendingRollRequest } from "@/lib/campaigns";
+import type {
+  Campaign,
+  CampaignMember,
+  CampaignMessage,
+  PendingRollRequest,
+  PendingImageConfirmation,
+} from "@/lib/campaigns";
 import DiceTray, { type RollPurpose } from "@/components/DiceTray";
 import CharacterQuickPanel, { type QuickPanelCharacter } from "@/components/CharacterQuickPanel";
 import InitiativeTracker, { type CombatStateProps } from "@/components/InitiativeTracker";
+import IllustrateButton from "@/components/IllustrateButton";
+import VoiceRecordButton from "@/components/VoiceRecordButton";
 
 interface Props {
   campaign: Campaign;
@@ -22,6 +31,7 @@ interface Props {
 type Ack = (res: { ok: true } | { error: string }) => void;
 
 const EMPTY_COMBAT: CombatStateProps = { active: false, turnOrder: [], currentTurnIndex: 0 };
+const VOICE_CONFIRM_SECONDS = 3;
 
 export default function CampaignRoom({
   campaign,
@@ -34,6 +44,7 @@ export default function CampaignRoom({
   const router = useRouter();
   const socketRef = useRef<Socket | null>(null);
   const logRef = useRef<HTMLDivElement>(null);
+  const voiceTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   const [members, setMembers] = useState(initialMembers);
   const [messages, setMessages] = useState(initialMessages);
@@ -48,6 +59,11 @@ export default function CampaignRoom({
   const [pendingRollRequest, setPendingRollRequest] = useState<PendingRollRequest | null>(
     campaign.pendingRollRequest,
   );
+  const [pendingImageConfirmation, setPendingImageConfirmation] = useState<PendingImageConfirmation | null>(
+    campaign.pendingImageConfirmation,
+  );
+  const [imageGenerating, setImageGenerating] = useState(false);
+  const [voiceCountdown, setVoiceCountdown] = useState<number | null>(null);
 
   const myCharacterId = myMembership?.characterId ?? null;
 
@@ -128,6 +144,14 @@ export default function CampaignRoom({
       setPendingRollRequest(request);
     });
 
+    socket.on("image_confirmation_requested", (request: PendingImageConfirmation | null) => {
+      setPendingImageConfirmation(request);
+    });
+
+    socket.on("image_generating", (payload: { generating: boolean }) => {
+      setImageGenerating(payload.generating);
+    });
+
     if (joined) {
       socket.emit("join_campaign", campaign.id, (res: { ok: true } | { error: string }) => {
         if ("error" in res) setConnectionError(res.error);
@@ -165,9 +189,18 @@ export default function CampaignRoom({
     router.push("/campaigns");
   }
 
+  function clearVoiceTimer() {
+    if (voiceTimerRef.current) {
+      clearInterval(voiceTimerRef.current);
+      voiceTimerRef.current = null;
+    }
+    setVoiceCountdown(null);
+  }
+
   function sendMessage() {
     const content = draft.trim();
     if (!content || !socketRef.current) return;
+    clearVoiceTimer();
     const ack: Ack = (res) => {
       if ("error" in res) setConnectionError(res.error);
     };
@@ -175,8 +208,36 @@ export default function CampaignRoom({
     setDraft("");
   }
 
+  function handleTranscribed(text: string) {
+    setDraft(text);
+    clearVoiceTimer();
+    let secondsLeft = VOICE_CONFIRM_SECONDS;
+    setVoiceCountdown(secondsLeft);
+    voiceTimerRef.current = setInterval(() => {
+      secondsLeft -= 1;
+      if (secondsLeft <= 0) {
+        clearVoiceTimer();
+        sendMessage();
+      } else {
+        setVoiceCountdown(secondsLeft);
+      }
+    }, 1000);
+  }
+
   function handleRoll(purpose: RollPurpose) {
     emit("roll_dice", { campaignId: campaign.id, characterId: myCharacterId, purpose });
+  }
+
+  function handleIllustrateRequest(subject: string) {
+    emit("request_image", { campaignId: campaign.id, subject, kind: "scene" });
+  }
+
+  function confirmImage() {
+    emit("confirm_image", { campaignId: campaign.id });
+  }
+
+  function dismissImageConfirmation() {
+    emit("dismiss_image_confirmation", { campaignId: campaign.id });
   }
 
   if (!joined) {
@@ -242,6 +303,13 @@ export default function CampaignRoom({
           />
         </div>
 
+        <Link
+          href={`/campaigns/${campaign.id}/gallery`}
+          className="mt-4 block text-xs text-amber-300 underline"
+        >
+          Image gallery
+        </Link>
+
         {connectionError && <p className="mt-3 text-xs text-red-400">{connectionError}</p>}
 
         <button
@@ -261,6 +329,16 @@ export default function CampaignRoom({
             {messages.map((m) =>
               streamingMessage?.id === m.id ? null : (
                 <div key={m.id} className="text-sm">
+                  {m.imagePath && (
+                    <a href={`/api/images/${m.imagePath}`} target="_blank" rel="noreferrer">
+                      {/* eslint-disable-next-line @next/next/no-img-element -- served from an authenticated internal API route */}
+                      <img
+                        src={`/api/images/${m.imagePath}`}
+                        alt={m.content}
+                        className="mb-1 max-w-sm rounded-lg border border-amber-800/40"
+                      />
+                    </a>
+                  )}
                   {m.senderType === "system" ? (
                     <span className="italic text-amber-200/40">{m.content}</span>
                   ) : m.senderType === "roll" ? (
@@ -291,8 +369,35 @@ export default function CampaignRoom({
             {dmTyping && !streamingMessage && (
               <p className="text-xs italic text-amber-200/40">The DM is thinking…</p>
             )}
+
+            {imageGenerating && (
+              <p className="text-xs italic text-amber-200/40">Painting the scene…</p>
+            )}
           </div>
         </div>
+
+        {pendingImageConfirmation && (
+          <div className="mt-3 flex items-center justify-between rounded border border-amber-700/50 bg-amber-900/20 px-3 py-2 text-sm">
+            <span className="text-amber-100">
+              Illustrate: {pendingImageConfirmation.subject}?
+            </span>
+            <div className="flex gap-2">
+              <button
+                onClick={confirmImage}
+                disabled={imageGenerating}
+                className="rounded bg-amber-700 px-3 py-1 text-xs text-amber-50 hover:bg-amber-600 disabled:opacity-50"
+              >
+                Confirm
+              </button>
+              <button
+                onClick={dismissImageConfirmation}
+                className="rounded border border-amber-700/40 px-3 py-1 text-xs text-amber-200/70"
+              >
+                Not now
+              </button>
+            </div>
+          </div>
+        )}
 
         <div className="mt-3">
           <DiceTray
@@ -302,10 +407,18 @@ export default function CampaignRoom({
           />
         </div>
 
+        <div className="mt-3 flex items-center gap-2">
+          <IllustrateButton disabled={imageGenerating} onRequest={handleIllustrateRequest} />
+          <VoiceRecordButton campaignId={campaign.id} onTranscribed={handleTranscribed} />
+        </div>
+
         <div className="mt-3 flex gap-2">
           <input
             value={draft}
-            onChange={(e) => setDraft(e.target.value)}
+            onChange={(e) => {
+              setDraft(e.target.value);
+              clearVoiceTimer();
+            }}
             onKeyDown={(e) => {
               if (e.key === "Enter") sendMessage();
             }}
@@ -319,6 +432,11 @@ export default function CampaignRoom({
             Send
           </button>
         </div>
+        {voiceCountdown !== null && (
+          <p className="mt-1 text-xs text-amber-300">
+            Sending in {voiceCountdown}s — edit above to change it, or send now.
+          </p>
+        )}
       </section>
 
       {quickCharacter && (

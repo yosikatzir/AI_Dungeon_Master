@@ -216,6 +216,7 @@ db.exec(`
     active_quests TEXT NOT NULL DEFAULT '[]', -- JSON [string]
     last_summarized_message_id INTEGER NOT NULL DEFAULT 0,
     pending_roll_request TEXT, -- JSON { characterId, characterName, rollType, ability, skill, dc, reason } | NULL
+    pending_image_confirmation TEXT, -- JSON { subject, kind } | NULL
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     updated_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
@@ -238,6 +239,20 @@ db.exec(`
     character_id INTEGER REFERENCES characters(id),
     content TEXT NOT NULL,
     roll_data TEXT, -- JSON D20RollResult, only set when sender_type = 'roll'
+    image_path TEXT, -- filename under ./data/images/, set when this message carries a generated image
+    created_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
+
+  -- Every uploaded portrait and generated image, tagged by subject, so future
+  -- generations of the same character/NPC/location can be passed as a
+  -- reference for visual consistency.
+  CREATE TABLE IF NOT EXISTS image_registry (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    campaign_id INTEGER REFERENCES campaigns(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL, -- 'portrait' | 'scene' | 'npc' | 'map'
+    subject_tags TEXT NOT NULL DEFAULT '[]', -- JSON [string] — character ids, NPC names, location names
+    prompt TEXT NOT NULL,
+    file_path TEXT NOT NULL,
     created_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
 

@@ -3,7 +3,13 @@ import { openai, withRetry, AiError } from "@/lib/ai/openai";
 import { DM_MODEL, MAX_TOOL_ITERATIONS } from "@/lib/ai/config";
 import { assembleDmContext, type DmContextOptions } from "@/lib/ai/context";
 import { DM_TOOLS, executeTool } from "@/lib/ai/tools";
-import { addMessage, getCampaign, type CampaignMessage, type PendingRollRequest } from "@/lib/campaigns";
+import {
+  addMessage,
+  getCampaign,
+  type CampaignMessage,
+  type PendingRollRequest,
+  type PendingImageConfirmation,
+} from "@/lib/campaigns";
 import { getIoInstance } from "@/lib/realtime/ioInstance";
 import { maybeSummarize } from "@/lib/ai/summarize";
 
@@ -85,6 +91,7 @@ export async function runDmTurn(
         let broadcastContent: string | undefined;
         let endTurn: boolean | undefined;
         let rollRequest: PendingRollRequest | undefined;
+        let imageConfirmation: PendingImageConfirmation | undefined;
 
         try {
           const result = await executeTool(campaignId, toolCall.function.name, toolCall.function.arguments);
@@ -92,6 +99,7 @@ export async function runDmTurn(
           broadcastContent = result.broadcastContent;
           endTurn = result.endTurn;
           rollRequest = result.rollRequest;
+          imageConfirmation = result.imageConfirmation;
         } catch (err) {
           resultText = err instanceof Error ? `Error: ${err.message}` : "Tool failed unexpectedly.";
         }
@@ -112,6 +120,9 @@ export async function runDmTurn(
         }
         if (rollRequest) {
           getIoInstance()?.to(roomName(campaignId)).emit("roll_requested", rollRequest);
+        }
+        if (imageConfirmation) {
+          getIoInstance()?.to(roomName(campaignId)).emit("image_confirmation_requested", imageConfirmation);
         }
         if (endTurn) turnShouldEnd = true;
       }

@@ -6,6 +6,7 @@ import {
   addMessage,
   getCampaign,
   setPendingRollRequest,
+  setPendingImageConfirmation,
   type CampaignMessage,
 } from "@/lib/campaigns";
 import { getCharacterRecord } from "@/lib/characters";
@@ -16,6 +17,7 @@ import {
   spellSlotSchema,
   longRestSchema,
   campaignIdSchema,
+  requestImageSchema,
 } from "@/lib/validation/engine";
 import { performRoll, formatRollOutcome } from "@/lib/engine/rolls";
 import {
@@ -28,6 +30,8 @@ import {
 import { rollInitiative, nextTurn, endCombat, getCombatState } from "@/lib/engine/combat";
 import { getCampaignPresence } from "@/lib/realtime/presence";
 import { runDmTurn } from "@/lib/ai/dm";
+import { generateCampaignImage } from "@/lib/ai/images";
+import { AiError } from "@/lib/ai/openai";
 
 function triggerDmTurn(campaignId: number) {
   runDmTurn(campaignId).catch((err) => {
@@ -391,6 +395,113 @@ export function registerSocketHandlers(io: SocketIOServer) {
           content: "Combat has ended.",
         }),
       );
+      ack?.({ ok: true });
+    });
+
+    async function generateAndPostImage(
+      campaignId: number,
+      subject: string,
+      kind: "scene" | "npc" | "map",
+    ) {
+      const room = `campaign:${campaignId}`;
+      io.to(room).emit("image_generating", { generating: true });
+      try {
+        // If the subject names a present character, pass their portrait as a
+        // reference so generated art stays visually consistent with them.
+        const members = getCampaignMembers(campaignId).filter(
+          (m) => m.status === "active" && m.characterId !== null,
+        );
+        const matchedMember = members.find((m) =>
+          subject.toLowerCase().includes((m.characterName ?? "").toLowerCase()),
+        );
+        const subjectTags = [subject.toLowerCase()];
+        if (matchedMember?.characterName) subjectTags.push(matchedMember.characterName.toLowerCase());
+
+        const { filePath } = await generateCampaignImage({
+          campaignId,
+          kind,
+          subject,
+          subjectTags,
+          characterIdForReference: matchedMember?.characterId ?? undefined,
+        });
+
+        emitMessage(
+          io,
+          addMessage({
+            campaignId,
+            senderType: "system",
+            userId: null,
+            characterId: null,
+            content: `Illustrated: ${subject}`,
+            imagePath: filePath,
+          }),
+        );
+      } catch (err) {
+        const userFacing = err instanceof AiError ? err.userFacing : "Could not generate that image.";
+        emitMessage(
+          io,
+          addMessage({
+            campaignId,
+            senderType: "system",
+            userId: null,
+            characterId: null,
+            content: userFacing,
+          }),
+        );
+      } finally {
+        io.to(room).emit("image_generating", { generating: false });
+      }
+    }
+
+    socket.on("request_image", (payload: unknown, ack?: Ack) => {
+      const parsed = requestImageSchema.safeParse(payload);
+      if (!parsed.success) {
+        ack?.({ error: parsed.error.issues[0]?.message ?? "Invalid request" });
+        return;
+      }
+      const { campaignId, subject, kind } = parsed.data;
+      const membership = getMembership(campaignId, data(socket).userId);
+      if (!membership || membership.status !== "active") {
+        ack?.({ error: "Not a member of this campaign" });
+        return;
+      }
+      ack?.({ ok: true });
+      generateAndPostImage(campaignId, subject, kind);
+    });
+
+    socket.on("confirm_image", (payload: unknown, ack?: Ack) => {
+      const parsed = campaignIdSchema.safeParse(payload);
+      if (!parsed.success) {
+        ack?.({ error: "Invalid request" });
+        return;
+      }
+      const { campaignId } = parsed.data;
+      const membership = getMembership(campaignId, data(socket).userId);
+      if (!membership || membership.status !== "active") {
+        ack?.({ error: "Not a member of this campaign" });
+        return;
+      }
+      const campaign = getCampaign(campaignId);
+      const request = campaign?.pendingImageConfirmation;
+      if (!request) {
+        ack?.({ error: "No pending image to confirm" });
+        return;
+      }
+      setPendingImageConfirmation(campaignId, null);
+      io.to(`campaign:${campaignId}`).emit("image_confirmation_requested", null);
+      ack?.({ ok: true });
+      generateAndPostImage(campaignId, request.subject, request.kind);
+    });
+
+    socket.on("dismiss_image_confirmation", (payload: unknown, ack?: Ack) => {
+      const parsed = campaignIdSchema.safeParse(payload);
+      if (!parsed.success) {
+        ack?.({ error: "Invalid request" });
+        return;
+      }
+      const { campaignId } = parsed.data;
+      setPendingImageConfirmation(campaignId, null);
+      io.to(`campaign:${campaignId}`).emit("image_confirmation_requested", null);
       ack?.({ ok: true });
     });
 

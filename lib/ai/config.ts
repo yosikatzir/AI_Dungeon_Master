@@ -16,3 +16,11 @@ export const RECENT_MESSAGE_WINDOW = 30;
 
 /** Safety cap on tool-call round-trips within a single DM turn. */
 export const MAX_TOOL_ITERATIONS = 6;
+
+/**
+ * Appended to every image prompt (scenes, portraits, NPCs) so the whole
+ * campaign feels visually consistent. Maps use their own scaffolding — see
+ * lib/ai/images.ts.
+ */
+export const IMAGE_STYLE =
+  "classic fantasy oil-painting illustration in the style of vintage tabletop RPG rulebook art, rich colors, dramatic lighting, painterly detail";
