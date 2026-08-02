@@ -9,6 +9,18 @@ import { getCharacterRecord } from "@/lib/characters";
 
 const IMAGES_DIR = path.join(process.cwd(), "data", "images");
 
+/** openai's `toFile` doesn't infer a MIME type from the filename — without
+ *  an explicit `type`, uploads default to application/octet-stream, which
+ *  images.edit rejects ("unsupported mimetype"). GIF portraits aren't
+ *  supported by images.edit at all (only jpeg/png/webp); such a reference
+ *  is simply skipped rather than sent with a guessed, likely-wrong type. */
+const REFERENCE_MIME_BY_EXT: Record<string, string> = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".webp": "image/webp",
+};
+
 /** Reference images per generation. More dilutes edit quality and adds
  *  latency/cost without much composition benefit past a small ensemble cast. */
 const MAX_REFERENCE_IMAGES = 4;
@@ -47,12 +59,16 @@ async function generateImageBuffer(params: {
   referenceFilePaths: string[];
 }): Promise<Buffer> {
   if (params.referenceFilePaths.length > 0) {
-    const files = await Promise.all(
-      params.referenceFilePaths.map(async (filename) => {
-        const buffer = await fs.readFile(path.join(IMAGES_DIR, filename));
-        return toFile(buffer, filename);
-      }),
-    );
+    const files = (
+      await Promise.all(
+        params.referenceFilePaths.map(async (filename) => {
+          const type = REFERENCE_MIME_BY_EXT[path.extname(filename).toLowerCase()];
+          if (!type) return null; // e.g. an unsupported GIF portrait — skip rather than guess
+          const buffer = await fs.readFile(path.join(IMAGES_DIR, filename));
+          return toFile(buffer, filename, { type });
+        }),
+      )
+    ).filter((f) => f !== null);
     const result = await withRetry(() =>
       openai.images.edit({
         model: IMAGE_MODEL,
