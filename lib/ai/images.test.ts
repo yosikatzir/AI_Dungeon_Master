@@ -46,4 +46,17 @@ describe("detectSubjectsInText", () => {
     const result = detectSubjectsInText("An empty room with dust motes.", candidates);
     expect(result).toEqual([]);
   });
+
+  it("matches an informal first-name reference against a full punctuated name", () => {
+    // Real bug: players type "Saulrok", not the full `Saulrok "Riff-Render" Wylde`.
+    const nicknamed: ImageSubject[] = [{ name: 'Saulrok "Riff-Render" Wylde', characterId: 3 }];
+    const result = detectSubjectsInText("saulrok talking to the barkeep", nicknamed);
+    expect(result.map((c) => c.name)).toEqual(['Saulrok "Riff-Render" Wylde']);
+  });
+
+  it("matches on the quoted nickname alone too", () => {
+    const nicknamed: ImageSubject[] = [{ name: 'Saulrok "Riff-Render" Wylde', characterId: 3 }];
+    const result = detectSubjectsInText("Riff-Render steps up to the bar.", nicknamed);
+    expect(result.map((c) => c.name)).toEqual(['Saulrok "Riff-Render" Wylde']);
+  });
 });
