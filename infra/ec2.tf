@@ -48,6 +48,7 @@ resource "aws_instance" "app" {
     repo_url     = var.repo_url
     region       = var.region
     public_ip    = aws_eip.app.public_ip
+    data_bucket  = var.data_bucket_name
     nginx_conf   = file("${path.module}/templates/nginx.conf")
     systemd_unit = file("${path.module}/templates/family-table.service")
   })

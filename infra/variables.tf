@@ -38,3 +38,9 @@ variable "repo_url" {
   type        = string
   default     = "https://github.com/yosikatzir/AI_Dungeon_Master.git"
 }
+
+variable "data_bucket_name" {
+  description = "S3 bucket (created by infra/bootstrap/) used to back up app data at teardown and restore it on the next deploy."
+  type        = string
+  default     = "family-table-data-287496344353"
+}

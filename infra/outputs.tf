@@ -17,3 +17,13 @@ output "admin_password_hint" {
   description = "How to retrieve the one-time generated admin password after first boot."
   value       = "ssh in, then: sudo grep -A1 -i 'admin password' /var/log/cloud-init-output.log"
 }
+
+output "data_bucket_name" {
+  description = "S3 bucket used by scripts/teardown-aws.sh to back up app data before destroy."
+  value       = var.data_bucket_name
+}
+
+output "region" {
+  description = "AWS region this is deployed into."
+  value       = var.region
+}

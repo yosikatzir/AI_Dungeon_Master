@@ -320,6 +320,42 @@ This is a **single, non-scalable instance by design** — presence tracking is
 in-memory per process and the DB is one SQLite file, so there's deliberately no
 ASG/multi-instance setup (see `infra/`'s plan notes for the full reasoning).
 
+### Terraform state
+
+State lives in S3 (`s3://family-table-tfstate-287496344353/`), locked via a
+DynamoDB table, so `infra/` can be applied or destroyed from any machine with
+the `personal` AWS profile — no local state file to carry around. That bucket
+and lock table (plus the data-backup bucket below) are created once by
+[`infra/bootstrap/`](infra/bootstrap/), which intentionally keeps its own
+local state — it creates the bucket `infra/` then stores its state in, so it
+can't bootstrap itself into S3. Re-running it is safe but shouldn't be
+necessary again for this account.
+
+### Full teardown and redeploy, with data preserved
+
+```bash
+./scripts/teardown-aws.sh
+```
+
+Destroys every AWS resource `infra/` manages (EC2, EBS, EIP, security group,
+IAM role, Secrets Manager secret) — true $0 when off — but first stops the
+app cleanly and syncs `app.db`/`images/` to a separate, permanent S3 bucket
+(`family-table-data-287496344353`, created by `infra/bootstrap/`, versioned,
+never touched by `terraform destroy`). The next `terraform apply` restores
+that data onto the fresh EBS volume before the app starts — `npm run seed`
+then detects the restored admin account/SRD content and skips re-seeding, so
+a redeploy picks up exactly where the teardown left off (verified live: an
+admin password set before a real teardown/redeploy cycle still worked
+afterward, which a fresh seed's randomly-generated password couldn't have).
+The self-signed TLS cert is deliberately excluded from this backup — the
+Elastic IP changes on every redeploy, so a stale cert would have the wrong
+IP in its SAN; a fresh one is generated on each boot instead.
+
+Since the Secrets Manager secret is destroyed too, `OPENAI_API_KEY` needs to
+be re-entered after a teardown — see the deployment runbook above for the
+`put-secret-value` command (`SESSION_SECRET` can just be freshly generated
+again; nothing depends on it surviving a teardown).
+
 One packaging quirk worth knowing if `infra/templates/user_data.sh.tftpl` is
 ever touched: `better-sqlite3`'s bundled prebuilt binary is linked against a
 newer glibc than Amazon Linux 2023 ships (`ERR_DLOPEN_FAILED: GLIBC_2.38 not

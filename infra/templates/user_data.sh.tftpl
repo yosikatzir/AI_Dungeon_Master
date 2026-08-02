@@ -62,6 +62,22 @@ mountpoint -q /opt/family-table/app/data || mount /opt/family-table/app/data
 
 chown -R family-table:family-table /opt/family-table
 
+# --- Restore prior app data from S3, if this is a fresh volume following a
+# teardown+redeploy ---
+# On a genuinely fresh EBS volume this is a no-op (nothing in S3 yet). The
+# TLS cert is deliberately excluded — it's tied to the old instance's public
+# IP, which will have changed, so a fresh one is generated below instead.
+# `npm run seed` further down is idempotent and just detects the restored
+# admin/SRD content and skips re-creating it — this is what makes the
+# restored state pick up exactly where teardown left off.
+if aws s3 ls "s3://${data_bucket}/data/app.db" --region "${region}" >/dev/null 2>&1; then
+  echo "Restoring app data from s3://${data_bucket}/data/ ..."
+  sudo -u family-table aws s3 sync "s3://${data_bucket}/data/" /opt/family-table/app/data/ \
+    --region "${region}" --exclude "tls/*"
+else
+  echo "No prior backup found in S3 — starting fresh."
+fi
+
 # --- Self-signed TLS cert (on the persistent data volume, so it survives
 # instance replacement) ---
 # No domain exists yet, but the app's session cookie is Secure-flagged in
