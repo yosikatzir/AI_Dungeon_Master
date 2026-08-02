@@ -6,8 +6,16 @@
  * lib/ai/images.ts). Bedrock model IDs are inference-profile IDs, not bare
  * foundation-model IDs — invoking the bare ID fails with "on-demand
  * throughput isn't supported" for these models.
+ *
+ * DM_MODEL is Haiku, not the originally-intended Sonnet: this AWS account's
+ * Bedrock entitlement doesn't currently include Sonnet-tier Claude models —
+ * confirmed live via `aws bedrock get-foundation-model-availability`, which
+ * shows `agreementAvailability: NOT_AVAILABLE` for every Sonnet model tried
+ * (including the older 4.5) while Haiku shows `AVAILABLE`. This is an
+ * account-level entitlement gap, not an IAM or code issue. Once Sonnet
+ * access is granted (Bedrock console / AWS support), swap this back.
  */
-export const DM_MODEL = "us.anthropic.claude-sonnet-5";
+export const DM_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 export const SUMMARIZER_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 export const IMAGE_MODEL = "gpt-image-1";
 
