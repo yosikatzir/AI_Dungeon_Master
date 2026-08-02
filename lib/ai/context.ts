@@ -1,4 +1,4 @@
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
+import type { Message, SystemContentBlock } from "@aws-sdk/client-bedrock-runtime";
 import { getCampaign, getCampaignMembers, listRecentMessages, type Campaign } from "@/lib/campaigns";
 import { resolveCharacter } from "@/lib/characters";
 import { computeCharacterSheet } from "@/lib/rules/characterSheet";
@@ -116,25 +116,53 @@ function buildStateBlock(campaign: Campaign): string {
     .join("\n\n");
 }
 
-function messageToChatParam(message: {
+interface RawTurn {
+  role: "user" | "assistant";
+  text: string;
+}
+
+function messageToRawTurn(message: {
   senderType: string;
   username: string | null;
   characterName: string | null;
   content: string;
-}): ChatCompletionMessageParam {
+}): RawTurn {
   if (message.senderType === "dm") {
-    return { role: "assistant", content: message.content };
+    return { role: "assistant", text: message.content };
   }
   if (message.senderType === "player") {
     const speaker = message.characterName ?? message.username ?? "A player";
-    return { role: "user", content: `${speaker}: ${message.content}` };
+    return { role: "user", text: `${speaker}: ${message.content}` };
   }
   if (message.senderType === "roll") {
-    return { role: "user", content: `[Roll result] ${message.content}` };
+    return { role: "user", text: `[Roll result] ${message.content}` };
   }
   // system: presence/mutation notes — useful context, tagged so the model
   // doesn't mistake it for something a player said in character.
-  return { role: "user", content: `[System] ${message.content}` };
+  return { role: "user", text: `[System] ${message.content}` };
+}
+
+/** Bedrock's Converse API requires strict user/assistant alternation and
+ *  rejects consecutive same-role turns — unlike OpenAI's chat completions,
+ *  which tolerates an arbitrary role sequence. Real multiplayer chat easily
+ *  produces two "player" messages back-to-back with no DM reply between
+ *  them, so consecutive same-role turns get folded into one message with
+ *  multiple text blocks rather than sent as separate messages. Also drops a
+ *  leading assistant turn, if any, since a conversation must start on user —
+ *  losing one DM line from the verbatim recent-window edge is harmless (the
+ *  rolling summary covers anything older anyway). */
+function coalesceTurns(turns: RawTurn[]): Message[] {
+  const messages: Message[] = [];
+  for (const turn of turns) {
+    const last = messages[messages.length - 1];
+    if (last?.role === turn.role) {
+      last.content!.push({ text: turn.text });
+    } else {
+      messages.push({ role: turn.role, content: [{ text: turn.text }] });
+    }
+  }
+  if (messages[0]?.role === "assistant") messages.shift();
+  return messages;
 }
 
 /** Plain "Speaker: content" rendering for the out-of-character table-talk
@@ -156,54 +184,63 @@ export interface DmContextOptions {
   channel?: "story" | "meta";
 }
 
-export function assembleDmContext(
-  campaignId: number,
-  options: DmContextOptions = {},
-): ChatCompletionMessageParam[] {
+export interface DmTurnContext {
+  system: SystemContentBlock[];
+  messages: Message[];
+}
+
+export function assembleDmContext(campaignId: number, options: DmContextOptions = {}): DmTurnContext {
   const campaign = getCampaign(campaignId);
   if (!campaign) throw new Error("Campaign not found");
   const isMeta = options.channel === "meta";
 
-  const messages: ChatCompletionMessageParam[] = [
-    { role: "system", content: isMeta ? buildMetaSystemPrompt() : buildDmSystemPrompt() },
-    { role: "system", content: buildStateBlock(campaign) },
+  const system: SystemContentBlock[] = [
+    { text: isMeta ? buildMetaSystemPrompt() : buildDmSystemPrompt() },
+    { text: buildStateBlock(campaign) },
   ];
 
   if (campaign.summary) {
-    messages.push({ role: "system", content: `ROLLING SUMMARY OF EARLIER EVENTS:\n${campaign.summary}` });
+    system.push({ text: `ROLLING SUMMARY OF EARLIER EVENTS:\n${campaign.summary}` });
   }
   if (campaign.plotLog.length > 0) {
-    messages.push({
-      role: "system",
-      content: `PLOT LOG:\n${campaign.plotLog.map((p) => `- ${p.summary}`).join("\n")}`,
-    });
+    system.push({ text: `PLOT LOG:\n${campaign.plotLog.map((p) => `- ${p.summary}`).join("\n")}` });
   }
+
+  const turns: RawTurn[] = [];
 
   if (isMeta) {
     const recentMeta = listRecentMessages(campaignId, RECENT_MESSAGE_WINDOW, "meta");
     for (const message of recentMeta) {
-      messages.push(messageToChatParam(message));
+      turns.push(messageToRawTurn(message));
     }
   } else {
     const recent = listRecentMessages(campaignId, RECENT_MESSAGE_WINDOW, "story");
     for (const message of recent) {
-      messages.push(messageToChatParam(message));
+      turns.push(messageToRawTurn(message));
     }
 
     const recentTableTalk = listRecentMessages(campaignId, 10, "meta");
     if (recentTableTalk.length > 0) {
-      messages.push({
-        role: "system",
-        content: `TABLE TALK (out-of-character — honor any DM rulings made here):\n${recentTableTalk
+      // Background context, not a conversation turn — goes in `system` like
+      // the summary/plot log, since Converse has no mid-conversation system role.
+      system.push({
+        text: `TABLE TALK (out-of-character — honor any DM rulings made here):\n${recentTableTalk
           .map(tableTalkLine)
           .join("\n")}`,
       });
     }
   }
 
+  const messages = coalesceTurns(turns);
+
   if (options.kickoffInstruction) {
-    messages.push({ role: "user", content: options.kickoffInstruction });
+    const last = messages[messages.length - 1];
+    if (last?.role === "user") {
+      last.content!.push({ text: options.kickoffInstruction });
+    } else {
+      messages.push({ role: "user", content: [{ text: options.kickoffInstruction }] });
+    }
   }
 
-  return messages;
+  return { system, messages };
 }

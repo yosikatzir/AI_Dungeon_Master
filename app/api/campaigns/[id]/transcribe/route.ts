@@ -1,11 +1,23 @@
+import { randomUUID } from "node:crypto";
 import { NextRequest, NextResponse } from "next/server";
-import { toFile } from "openai";
+import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import {
+  TranscribeClient,
+  StartTranscriptionJobCommand,
+  GetTranscriptionJobCommand,
+  DeleteTranscriptionJobCommand,
+} from "@aws-sdk/client-transcribe";
 import { getCurrentUser } from "@/lib/auth";
 import { getMembership } from "@/lib/campaigns";
-import { openai, withRetry, AiError } from "@/lib/ai/openai";
-import { WHISPER_MODEL } from "@/lib/ai/config";
+import { TRANSCRIBE_LANGUAGE_CODE, DATA_BUCKET_NAME } from "@/lib/ai/config";
 
-const MAX_BYTES = 25 * 1024 * 1024; // Whisper's own limit
+const MAX_BYTES = 25 * 1024 * 1024;
+const POLL_INTERVAL_MS = 1500;
+const POLL_TIMEOUT_MS = 60_000;
+
+const region = process.env.AWS_REGION || "us-east-1";
+const s3 = new S3Client({ region });
+const transcribe = new TranscribeClient({ region });
 
 export async function POST(
   req: NextRequest,
@@ -29,15 +41,53 @@ export async function POST(
     return NextResponse.json({ error: "Recording is too long" }, { status: 400 });
   }
 
+  const jobName = randomUUID();
+  const s3Key = `transcribe-tmp/${jobName}.webm`;
+
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const uploadable = await toFile(buffer, "recording.webm");
-    const transcription = await withRetry(() =>
-      openai.audio.transcriptions.create({ file: uploadable, model: WHISPER_MODEL }),
+    await s3.send(new PutObjectCommand({ Bucket: DATA_BUCKET_NAME, Key: s3Key, Body: buffer }));
+
+    await transcribe.send(
+      new StartTranscriptionJobCommand({
+        TranscriptionJobName: jobName,
+        LanguageCode: TRANSCRIBE_LANGUAGE_CODE,
+        MediaFormat: "webm",
+        Media: { MediaFileUri: `s3://${DATA_BUCKET_NAME}/${s3Key}` },
+      }),
     );
-    return NextResponse.json({ text: transcription.text });
-  } catch (err) {
-    const message = err instanceof AiError ? err.userFacing : "Could not transcribe that recording.";
-    return NextResponse.json({ error: message }, { status: 502 });
+
+    const deadline = Date.now() + POLL_TIMEOUT_MS;
+    let status: string | undefined;
+    let transcriptUri: string | undefined;
+    let failureReason: string | undefined;
+
+    while (Date.now() < deadline) {
+      const { TranscriptionJob: job } = await transcribe.send(
+        new GetTranscriptionJobCommand({ TranscriptionJobName: jobName }),
+      );
+      status = job?.TranscriptionJobStatus;
+      transcriptUri = job?.Transcript?.TranscriptFileUri;
+      failureReason = job?.FailureReason;
+      if (status === "COMPLETED" || status === "FAILED") break;
+      await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
+    }
+
+    if (status !== "COMPLETED" || !transcriptUri) {
+      throw new Error(failureReason || `Transcription did not complete (status: ${status ?? "timed out"}).`);
+    }
+
+    const transcriptResponse = await fetch(transcriptUri);
+    const transcriptJson = await transcriptResponse.json();
+    const text: string = transcriptJson?.results?.transcripts?.[0]?.transcript ?? "";
+
+    return NextResponse.json({ text });
+  } catch {
+    return NextResponse.json({ error: "Could not transcribe that recording." }, { status: 502 });
+  } finally {
+    await Promise.allSettled([
+      transcribe.send(new DeleteTranscriptionJobCommand({ TranscriptionJobName: jobName })),
+      s3.send(new DeleteObjectCommand({ Bucket: DATA_BUCKET_NAME, Key: s3Key })),
+    ]);
   }
 }

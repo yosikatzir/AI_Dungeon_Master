@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { DM_TOOLS, META_DM_TOOLS } from "./tools";
 
 function toolNames(tools: typeof DM_TOOLS): string[] {
-  return tools.filter((t) => t.type === "function").map((t) => t.function.name);
+  return tools.map((t) => t.toolSpec?.name).filter((name): name is string => Boolean(name));
 }
 
 describe("META_DM_TOOLS", () => {

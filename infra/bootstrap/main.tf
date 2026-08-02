@@ -135,3 +135,29 @@ resource "aws_s3_bucket_public_access_block" "data" {
   ignore_public_acls      = true
   restrict_public_buckets = true
 }
+
+# Scratch space for in-flight voice transcription uploads
+# (app/api/campaigns/[id]/transcribe) — the route cleans these up itself on
+# every request, this is just a safety net in case cleanup ever fails (e.g.
+# a crashed request). Expires both current and noncurrent versions, unlike
+# the data/ prefix, since these objects have no backup value at all.
+resource "aws_s3_bucket_lifecycle_configuration" "transcribe_tmp" {
+  bucket = aws_s3_bucket.data.id
+
+  rule {
+    id     = "expire-transcribe-tmp"
+    status = "Enabled"
+
+    filter {
+      prefix = "transcribe-tmp/"
+    }
+
+    expiration {
+      days = 1
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 1
+    }
+  }
+}
