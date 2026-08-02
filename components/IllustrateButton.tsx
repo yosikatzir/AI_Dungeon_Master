@@ -13,7 +13,8 @@ export default function IllustrateButton({
   const [subject, setSubject] = useState("");
 
   function submit() {
-    if (!subject.trim()) return;
+    // Empty is fine — the DM illustrates the current scene by default;
+    // whatever's typed here is just an optional steer, not a requirement.
     onRequest(subject.trim());
     setSubject("");
     setOpen(false);
@@ -41,7 +42,7 @@ export default function IllustrateButton({
           if (e.key === "Enter") submit();
           if (e.key === "Escape") setOpen(false);
         }}
-        placeholder="What should the DM illustrate?"
+        placeholder="Optional: anything specific to include"
         className="min-h-[44px] min-w-0 flex-1 rounded border border-amber-700/40 bg-black/30 px-2 py-2 text-sm text-amber-50 sm:w-56 sm:flex-none"
       />
       <button

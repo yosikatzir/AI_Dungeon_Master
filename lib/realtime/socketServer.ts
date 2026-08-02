@@ -28,7 +28,7 @@ import {
   EngineValidationError,
 } from "@/lib/engine/mutations";
 import { rollInitiative, nextTurn, endCombat, getCombatState } from "@/lib/engine/combat";
-import { getCampaignPresence } from "@/lib/realtime/presence";
+import { getCampaignPresence, getOnlineUserIds } from "@/lib/realtime/presence";
 import { runDmTurn } from "@/lib/ai/dm";
 import type { DmContextOptions } from "@/lib/ai/context";
 import { generateCampaignImage, detectSubjectsInText, type ImageSubject } from "@/lib/ai/images";
@@ -419,6 +419,7 @@ export function registerSocketHandlers(io: SocketIOServer) {
           characterId: m.characterId!,
         }));
 
+        let effectiveSubject = subject;
         let subjects: ImageSubject[];
         if (explicitSubjectNames && explicitSubjectNames.length > 0) {
           // The DM told us exactly who's depicted — match each name against
@@ -429,20 +430,45 @@ export function registerSocketHandlers(io: SocketIOServer) {
             return member ?? { name };
           });
         } else {
-          // Player-direct 🎨 button path: detect present party members and
-          // roster NPCs named in the free-text subject.
+          // Player-direct 🎨 button path. The button's text field is
+          // optional — ground the image in the campaign's actual current
+          // scene by default (so "Illustrate this" with no text renders
+          // what the DM just narrated, not a blank guess), and treat any
+          // player text as an addendum rather than the whole prompt.
+          // Present (online) party members are always included — they're
+          // in the scene by virtue of playing right now — plus any roster
+          // NPCs named in the resulting text.
           const campaign = getCampaign(campaignId);
+          const sceneText = campaign?.currentScene?.trim();
+          const extra = subject.trim();
+          effectiveSubject = sceneText
+            ? extra
+              ? `${sceneText}\n\nAlso emphasize: ${extra}`
+              : sceneText
+            : extra || "the current scene";
+
+          const onlineUserIds = new Set(getOnlineUserIds(campaignId));
+          const presentMembers = members.filter((m) => onlineUserIds.has(m.userId));
+          const presentCandidates: ImageSubject[] = presentMembers.map((m) => ({
+            name: m.characterName!,
+            characterId: m.characterId!,
+          }));
           const npcCandidates: ImageSubject[] = (campaign?.npcRoster ?? []).map((n) => ({ name: n.name }));
-          subjects = detectSubjectsInText(subject, [...memberCandidates, ...npcCandidates]);
+          const namedNpcs = detectSubjectsInText(effectiveSubject, npcCandidates);
+          subjects = [...presentCandidates, ...namedNpcs];
         }
 
         const { filePath } = await generateCampaignImage({
           campaignId,
           kind,
-          subject,
+          subject: effectiveSubject,
           subjects,
         });
 
+        // effectiveSubject can be a full paragraph-long scene description
+        // for the button path with no player text — too long for a caption,
+        // so the caption falls back to a short label in that case.
+        const captionSubject = subject.trim() || "the current scene";
         emitMessage(
           io,
           addMessage({
@@ -450,7 +476,7 @@ export function registerSocketHandlers(io: SocketIOServer) {
             senderType: "system",
             userId: null,
             characterId: null,
-            content: `Illustrated: ${subject}`,
+            content: `Illustrated: ${captionSubject}`,
             imagePath: filePath,
           }),
         );

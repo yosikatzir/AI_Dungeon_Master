@@ -38,6 +38,8 @@ export const campaignIdSchema = z.object({
 
 export const requestImageSchema = z.object({
   campaignId: z.number().int().positive(),
-  subject: z.string().trim().min(1).max(500),
+  // Empty is valid: the direct-illustrate path defaults to the campaign's
+  // current scene when no specific text is given (see generateAndPostImage).
+  subject: z.string().trim().max(500),
   kind: z.enum(["scene", "npc", "map"]).default("scene"),
 });
