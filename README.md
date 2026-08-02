@@ -1,8 +1,10 @@
 # Family Table
 
-An AI-driven D&D 5e (2024 revised rules) platform where an OpenAI model acts
+An AI-driven D&D 5e (2024 revised rules) platform where an AI model acts
 as Dungeon Master, for private family play. Self-hosted, single Next.js app,
-single SQLite file.
+single SQLite file. Chat/summarization run on Amazon Bedrock (Claude); image
+generation stays on OpenAI's `gpt-image-1` (no viable Bedrock replacement
+exists yet — see "The AI DM" below).
 
 This project is being built in phases (see
 [`dnd-ai-dm-claude-code-prompt.md`](dnd-ai-dm-claude-code-prompt.md) for the
@@ -28,7 +30,13 @@ full spec).
   `iron-session`
 - `zod` for input validation
 - `socket.io` / `socket.io-client` for realtime campaign sessions
-- OpenAI SDK — wired in starting Phase 5
+- `@aws-sdk/client-bedrock-runtime` for the DM/summarizer (Claude via
+  Bedrock's Converse API), `@aws-sdk/client-transcribe` + `@aws-sdk/client-s3`
+  for voice input (Amazon Transcribe) — credentials come from the standard
+  AWS SDK provider chain (EC2 instance role in production, `AWS_PROFILE`
+  locally), no keys in this app
+- OpenAI SDK — image generation only (`lib/ai/images.ts`); wired in starting
+  Phase 5, chat/STT migrated off it once deployed to AWS (see below)
 
 ## Setup
 
@@ -46,12 +54,18 @@ full spec).
 
    Then fill in:
    - `OPENAI_API_KEY` — your OpenAI API key. Server-side only, never sent to
-     the client. Not used yet (arrives in Phase 5), but required at startup.
+     the client. Required at startup; used only for image generation
+     (`lib/ai/images.ts`) — chat/summarization run on Bedrock, voice input on
+     Amazon Transcribe.
    - `SESSION_SECRET` — a random string, 32+ characters. Generate one with:
 
      ```bash
      node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
      ```
+   - `AWS_REGION` / `AWS_PROFILE` — for local Bedrock/Transcribe/S3 access.
+     Both optional (`AWS_REGION` defaults to `us-east-1`; `AWS_PROFILE`
+     picks up credentials from `~/.aws` — not needed at all in production,
+     where the EC2 instance uses its IAM role automatically).
 
 3. Seed the database. This creates `./data/app.db`, loads all SRD 5.2
    reference content (classes, species, backgrounds, feats, spells,
@@ -167,6 +181,39 @@ until the model has nothing more to do mechanically, then persist and
 stream the narration to the room. The system prompt is its own file
 (`prompts/dm-system.ts`).
 
+**Runs on Bedrock, not OpenAI.** `lib/ai/bedrock.ts` wraps a
+`BedrockRuntimeClient`, mirroring the retry/error-mapping shape of the
+OpenAI-specific `lib/ai/openai.ts` (still used for images — see below); both
+throw a shared `AiError` (`lib/ai/errors.ts`). Two real differences from
+OpenAI's Chat Completions API worth knowing if you touch this code: (1)
+Bedrock's Converse API has no `role:"system"` message — system content is a
+separate top-level `system` array of blocks — and (2) it enforces strict
+user/assistant turn alternation and rejects consecutive same-role messages,
+which ordinary multiplayer chat (two players speaking back-to-back with no
+DM reply between them) triggers easily; `lib/ai/context.ts`'s `coalesceTurns`
+folds consecutive same-role turns into one message to handle this. Tool
+results are also grouped — all of one turn's tool results go back as a
+single message, not one per call like OpenAI's separate `role:"tool"`
+messages. `lib/ai/summarize.ts` uses the assistant-message-prefill trick
+(seed the reply with `{` so the model continues valid JSON) since Bedrock/
+Claude has no `response_format:"json_object"` equivalent.
+
+`DM_MODEL` is currently Haiku 4.5, not Sonnet: this AWS account's Bedrock
+entitlement doesn't include Sonnet-tier Claude models (confirmed live via
+`aws bedrock get-foundation-model-availability`, which shows
+`agreementAvailability: NOT_AVAILABLE` for every Sonnet model tried,
+including the older 4.5, while Haiku shows `AVAILABLE`) — an account-level
+gap, not an IAM or code issue. Swap `lib/ai/config.ts`'s `DM_MODEL` back to
+`us.anthropic.claude-sonnet-5` once access is granted.
+
+Image generation deliberately stayed on OpenAI's `gpt-image-1`
+(`lib/ai/images.ts`, unchanged) — investigated live before migrating and
+found no viable Bedrock replacement: Amazon's own image model (Nova Canvas)
+is `LEGACY` with access denied for this account and fully retires
+2026-09-30 with no successor in the catalog, and Stability AI's active
+models on Bedrock are all specialized editing operations (inpaint, outpaint,
+upscale, style transfer, etc.), not text-to-image generators.
+
 Context is never the full history: each call gets the system prompt, a
 structured campaign-state block (party stats, who's present vs. off-screen,
 current scene, active quests, initiative if in combat), a rolling summary,
@@ -225,10 +272,21 @@ your last visit" — unprompted, from context alone.
 
 Voice: hold the 🎤 button (`components/VoiceRecordButton.tsx`) to record via
 the browser's `MediaRecorder`; on release the clip posts to
-`/api/campaigns/[id]/transcribe`, which calls Whisper and returns the text.
-It fills the message box and auto-sends after 3 seconds unless you edit or
-send it yourself. Verified end to end with real synthesized speech (OpenAI
-TTS → Whisper) round-tripping back to the exact original sentence.
+`/api/campaigns/[id]/transcribe`, which now runs on **Amazon Transcribe**
+(a separate AWS service from Bedrock) instead of Whisper, and returns the
+text in the same `{text}` shape — no frontend changes needed. Transcribe's
+`StartTranscriptionJob` API is an async batch job, not a synchronous
+call-and-response like Whisper: the route uploads the clip to
+`s3://<data-bucket>/transcribe-tmp/`, starts a job, polls
+`GetTranscriptionJob` (bounded to ~60s), fetches the result, and always
+cleans up the job + S3 object (an S3 lifecycle rule expires anything left
+behind after 1 day as a backstop). This is a real latency trade-off accepted
+knowingly — noticeably slower than Whisper's near-instant response — in
+exchange for staying on AWS-native infra; still fills the message box and
+auto-sends after 3 seconds unless you edit or send it yourself. Verified
+live end to end with real synthesized speech round-tripping back to
+essentially the original sentence, and confirmed the temp S3 object and
+Transcribe job are both gone afterward.
 
 Images: `lib/ai/images.ts` generates via `gpt-image-1`, appending a single
 fixed style constant (`IMAGE_STYLE` in `lib/ai/config.ts`) to every prompt
@@ -257,14 +315,18 @@ several reference faces to the right names instead of guessing; the
 generated image is then registered under every subject's tag, becoming a
 future reference for each of them.
 
-Deviation: the actual multi-reference generation call wasn't run live (real
-API cost) — verified everything up to that boundary instead: unit tests
-for the reference-selection and name-detection logic, and a live dry run
-where the DM was asked to illustrate a scene with one party member and two
-NPCs present; the resulting `pending_image_confirmation` row was inspected
-directly and confirmed the DM populated `subjects` correctly before the
-request was dismissed rather than confirmed. Trying an actual multi-subject
-generation is left for a real session.
+Verified live for real (previously only dry-run/unit-test verified to avoid
+API cost): two characters enrolled with distinct uploaded portraits, asked
+the DM to illustrate both together at the current scene. The DM populated
+`subjects` correctly (`["Kara Ironhold","Elowen Brightpage","Elderly
+Woman","Starfall Vale Bridge"]`), and after confirming, `gpt-image-1`
+produced a real composed scene reflecting all of them. This surfaced a real,
+previously-uncaught bug: `toFile()` doesn't infer a MIME type from the
+filename, so reference uploads defaulted to `application/octet-stream`,
+which `images.edit` rejects outright — `generateImageBuffer` now maps file
+extension to an explicit MIME type (`lib/ai/images.ts`), skipping any
+reference with an unsupported extension (GIF portraits — not accepted by
+`images.edit` at all) rather than guessing.
 
 ## Mobile layout and polish
 
