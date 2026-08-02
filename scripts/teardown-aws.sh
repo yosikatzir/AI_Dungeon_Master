@@ -9,6 +9,8 @@
 # by design, so they survive every teardown/redeploy cycle.
 set -euo pipefail
 
+export AWS_PROFILE="${AWS_PROFILE:-personal}"
+
 cd "$(dirname "$0")/../infra"
 
 IP=$(terraform output -raw public_ip 2>/dev/null || echo "")
