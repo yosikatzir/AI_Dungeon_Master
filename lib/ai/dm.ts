@@ -1,5 +1,6 @@
-import type { ChatCompletionMessageParam } from "openai/resources/chat/completions";
-import { openai, withRetry, AiError } from "@/lib/ai/openai";
+import { ConverseCommand, type Message, type ContentBlock, type ToolUseBlock } from "@aws-sdk/client-bedrock-runtime";
+import { bedrock, withRetry } from "@/lib/ai/bedrock";
+import { AiError } from "@/lib/ai/errors";
 import { DM_MODEL, MAX_TOOL_ITERATIONS } from "@/lib/ai/config";
 import { assembleDmContext, type DmContextOptions } from "@/lib/ai/context";
 import { DM_TOOLS, META_DM_TOOLS, executeTool } from "@/lib/ai/tools";
@@ -45,6 +46,21 @@ async function streamNarration(campaignId: number, message: CampaignMessage): Pr
   io.to(room).emit("dm_stream_end", { message });
 }
 
+function extractText(message?: Message): string {
+  if (!message?.content) return "";
+  return message.content
+    .map((block) => block.text)
+    .filter((text): text is string => Boolean(text))
+    .join("");
+}
+
+function extractToolUses(message?: Message): ToolUseBlock[] {
+  if (!message?.content) return [];
+  return message.content
+    .map((block) => block.toolUse)
+    .filter((toolUse): toolUse is ToolUseBlock => toolUse !== undefined);
+}
+
 /**
  * Runs one full DM turn: assembles context, loops through tool calls the
  * model makes (executing each via the game engine and feeding the result
@@ -65,49 +81,61 @@ export async function runDmTurn(
 
   setDmTyping(campaignId, true, channel);
   try {
-    const messages: ChatCompletionMessageParam[] = assembleDmContext(campaignId, options);
+    const { system, messages } = assembleDmContext(campaignId, options);
     let finalContent: string | null = null;
 
     for (let iteration = 0; iteration < MAX_TOOL_ITERATIONS; iteration++) {
       const completion = await withRetry(() =>
-        openai.chat.completions.create({
-          model: DM_MODEL,
-          messages,
-          tools,
-          tool_choice: "auto",
-        }),
+        bedrock.send(
+          new ConverseCommand({
+            modelId: DM_MODEL,
+            system,
+            messages,
+            toolConfig: { tools },
+          }),
+        ),
       );
 
-      const responseMessage = completion.choices[0]?.message;
+      const responseMessage = completion.output?.message;
       if (!responseMessage) break;
       messages.push(responseMessage);
 
-      const toolCalls = responseMessage.tool_calls?.filter((tc) => tc.type === "function") ?? [];
-      if (toolCalls.length === 0) {
-        finalContent = responseMessage.content ?? "";
+      const toolUses = extractToolUses(responseMessage);
+      if (completion.stopReason !== "tool_use" || toolUses.length === 0) {
+        finalContent = extractText(responseMessage);
         break;
       }
 
       let turnShouldEnd = false;
-      for (const toolCall of toolCalls) {
+      const toolResultBlocks: ContentBlock[] = [];
+
+      for (const toolCall of toolUses) {
         let resultText: string;
         let broadcastContent: string | undefined;
         let endTurn: boolean | undefined;
         let rollRequest: PendingRollRequest | undefined;
         let imageConfirmation: PendingImageConfirmation | undefined;
+        let status: "success" | "error" = "success";
 
         try {
-          const result = await executeTool(campaignId, toolCall.function.name, toolCall.function.arguments);
+          const result = await executeTool(
+            campaignId,
+            toolCall.name ?? "",
+            (toolCall.input as Record<string, unknown>) ?? {},
+          );
           resultText = result.resultText;
           broadcastContent = result.broadcastContent;
           endTurn = result.endTurn;
           rollRequest = result.rollRequest;
           imageConfirmation = result.imageConfirmation;
         } catch (err) {
+          status = "error";
           resultText = err instanceof Error ? `Error: ${err.message}` : "Tool failed unexpectedly.";
         }
 
-        messages.push({ role: "tool", tool_call_id: toolCall.id, content: resultText });
+        toolResultBlocks.push({
+          toolResult: { toolUseId: toolCall.toolUseId ?? "", content: [{ text: resultText }], status },
+        });
 
         if (broadcastContent) {
           broadcastMessage(
@@ -131,8 +159,12 @@ export async function runDmTurn(
         if (endTurn) turnShouldEnd = true;
       }
 
+      // Bedrock groups all of one turn's tool results into a single user
+      // message (unlike OpenAI's one "tool"-role message per call).
+      messages.push({ role: "user", content: toolResultBlocks });
+
       if (turnShouldEnd) {
-        finalContent = responseMessage.content ?? null;
+        finalContent = extractText(responseMessage);
         break;
       }
     }

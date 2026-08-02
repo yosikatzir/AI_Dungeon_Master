@@ -1,12 +1,22 @@
 /**
- * Single source of truth for which OpenAI models the app uses. Change a
- * model here to upgrade it everywhere — nothing else in the codebase should
- * hardcode a model name.
+ * Single source of truth for which AI models/services the app uses. Change
+ * one here to upgrade it everywhere — nothing else in the codebase should
+ * hardcode a model name. Chat/summarization run on Bedrock (Claude); image
+ * generation stays on OpenAI (no viable Bedrock replacement exists — see
+ * lib/ai/images.ts). Bedrock model IDs are inference-profile IDs, not bare
+ * foundation-model IDs — invoking the bare ID fails with "on-demand
+ * throughput isn't supported" for these models.
  */
-export const DM_MODEL = "gpt-4o-mini";
-export const SUMMARIZER_MODEL = "gpt-4o-mini";
-export const WHISPER_MODEL = "whisper-1";
+export const DM_MODEL = "us.anthropic.claude-sonnet-5";
+export const SUMMARIZER_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 export const IMAGE_MODEL = "gpt-image-1";
+
+/** Amazon Transcribe language for voice input. */
+export const TRANSCRIBE_LANGUAGE_CODE = "en-US";
+
+/** S3 bucket (created by infra/bootstrap/) used for app data backup and as
+ *  scratch space for in-flight voice transcription uploads. */
+export const DATA_BUCKET_NAME = "family-table-data-287496344353";
 
 /** After this many messages accumulate since the last summary, fold them in. */
 export const SUMMARIZE_EVERY_N_MESSAGES = 40;

@@ -1,0 +1,17 @@
+[Unit]
+Description=Family Table
+After=network.target
+
+[Service]
+Type=simple
+User=family-table
+WorkingDirectory=/opt/family-table/app
+Environment=NODE_ENV=production
+Environment=PORT=3000
+ExecStartPre=/opt/family-table/app/fetch-secrets.sh
+ExecStart=/usr/bin/npm start
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

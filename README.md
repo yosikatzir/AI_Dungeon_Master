@@ -289,18 +289,78 @@ no horizontal overflow at 375px, and the party/log/character tabs each show
 only their own panel on mobile while the three panels sit side by side again
 above the `md` breakpoint.
 
-## Moving to AWS later
+## Running on AWS
 
-- Move `./data/app.db` to a persistent EBS-backed path (SQLite is a single
-  file, so this is a straight copy).
-- Move `./data/images/` to S3 (or keep on EBS) and update the image storage
-  module's base path/URL signing accordingly.
-- Run the custom Node server (`server.ts`) behind a reverse proxy (nginx or
-  an ALB) with TLS terminated there, and make sure the proxy is configured
-  to pass through WebSocket upgrades for the `/api/socket` path (Socket.IO
-  needs this); `npm run build && npm start` works unchanged.
-- Presence tracking is in-memory per process — fine for a single instance
-  (the expected self-host setup), but wouldn't survive a multi-instance
-  deployment without moving it to a shared store (e.g. Redis).
-- Set `OPENAI_API_KEY` and `SESSION_SECRET` as real environment variables
-  (e.g. via SSM Parameter Store) instead of `.env.local`.
+Deployed via Terraform in [`infra/`](infra/): a single EC2 instance (`t4g.small`,
+Amazon Linux 2023, no Docker — the same `npm run build && npm start` as local),
+behind nginx, which handles TLS and proxies everything — including WebSocket
+upgrades for `/api/socket` — to the app on `127.0.0.1:3000`. `./data/app.db` and
+`./data/images/` live on a separate EBS volume (`/opt/family-table/app/data`)
+whose lifecycle is decoupled from the instance, so replacing/resizing the
+instance doesn't touch game data. `OPENAI_API_KEY`/`SESSION_SECRET` live in AWS
+Secrets Manager and are fetched into `.env.local` on every service start (see
+`infra/templates/user_data.sh.tftpl` and `family-table.service`).
+
+No domain is configured yet, so nginx terminates HTTPS with a self-signed
+certificate (regenerated only if missing, stored on the persistent data volume).
+This isn't cosmetic: the app's session cookie is `Secure`-flagged in production
+(`lib/session.ts`), so plain HTTP can never hold a login — browsers silently
+refuse to store `Secure` cookies without TLS. Visiting the site shows a one-time
+"connection isn't private" warning (click through — Advanced → Proceed); once
+there's a real domain, swap in a Let's Encrypt cert via `certbot --nginx`
+against `infra/templates/nginx.conf` and remove the self-signed fallback.
+
+Redeploy after pushing code changes:
+
+```bash
+./scripts/deploy-aws.sh
+```
+
+This is a **single, non-scalable instance by design** — presence tracking is
+in-memory per process and the DB is one SQLite file, so there's deliberately no
+ASG/multi-instance setup (see `infra/`'s plan notes for the full reasoning).
+
+### Terraform state
+
+State lives in S3 (`s3://family-table-tfstate-287496344353/`), locked via a
+DynamoDB table, so `infra/` can be applied or destroyed from any machine with
+the `personal` AWS profile — no local state file to carry around. That bucket
+and lock table (plus the data-backup bucket below) are created once by
+[`infra/bootstrap/`](infra/bootstrap/), which intentionally keeps its own
+local state — it creates the bucket `infra/` then stores its state in, so it
+can't bootstrap itself into S3. Re-running it is safe but shouldn't be
+necessary again for this account.
+
+### Full teardown and redeploy, with data preserved
+
+```bash
+./scripts/teardown-aws.sh
+```
+
+Destroys every AWS resource `infra/` manages (EC2, EBS, EIP, security group,
+IAM role, Secrets Manager secret) — true $0 when off — but first stops the
+app cleanly and syncs `app.db`/`images/` to a separate, permanent S3 bucket
+(`family-table-data-287496344353`, created by `infra/bootstrap/`, versioned,
+never touched by `terraform destroy`). The next `terraform apply` restores
+that data onto the fresh EBS volume before the app starts — `npm run seed`
+then detects the restored admin account/SRD content and skips re-seeding, so
+a redeploy picks up exactly where the teardown left off (verified live: an
+admin password set before a real teardown/redeploy cycle still worked
+afterward, which a fresh seed's randomly-generated password couldn't have).
+The self-signed TLS cert is deliberately excluded from this backup — the
+Elastic IP changes on every redeploy, so a stale cert would have the wrong
+IP in its SAN; a fresh one is generated on each boot instead.
+
+Since the Secrets Manager secret is destroyed too, `OPENAI_API_KEY` needs to
+be re-entered after a teardown — see the deployment runbook above for the
+`put-secret-value` command (`SESSION_SECRET` can just be freshly generated
+again; nothing depends on it surviving a teardown).
+
+One packaging quirk worth knowing if `infra/templates/user_data.sh.tftpl` is
+ever touched: `better-sqlite3`'s bundled prebuilt binary is linked against a
+newer glibc than Amazon Linux 2023 ships (`ERR_DLOPEN_FAILED: GLIBC_2.38 not
+found`), and the package's own `"gypfile": false` disables npm's usual
+automatic node-gyp build. Both `user_data.sh.tftpl` and `scripts/deploy-aws.sh`
+work around this by running better-sqlite3's own `build-release` script
+directly and deleting the incompatible bundled prebuild so its loader falls
+back to the freshly compiled one.

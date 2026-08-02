@@ -32,7 +32,7 @@ import { getCampaignPresence } from "@/lib/realtime/presence";
 import { runDmTurn } from "@/lib/ai/dm";
 import type { DmContextOptions } from "@/lib/ai/context";
 import { generateCampaignImage, detectSubjectsInText, type ImageSubject } from "@/lib/ai/images";
-import { AiError } from "@/lib/ai/openai";
+import { AiError } from "@/lib/ai/errors";
 
 function triggerDmTurn(campaignId: number, options?: DmContextOptions) {
   runDmTurn(campaignId, options).catch((err) => {

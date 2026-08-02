@@ -1,4 +1,5 @@
-import { openai, withRetry } from "@/lib/ai/openai";
+import { ConverseCommand } from "@aws-sdk/client-bedrock-runtime";
+import { bedrock, withRetry } from "@/lib/ai/bedrock";
 import { SUMMARIZER_MODEL, SUMMARIZE_EVERY_N_MESSAGES } from "@/lib/ai/config";
 import { getCampaign, listMessagesAfter, updateCampaignMemory, type NpcRosterEntry } from "@/lib/campaigns";
 
@@ -54,20 +55,31 @@ ${transcript}
 Respond with ONLY a JSON object of this exact shape:
 {"summary": string, "npcRoster": [{"name": string, "description": string, "disposition": string}], "newPlotEvents": string[]}`;
 
+  // Bedrock/Claude has no response_format:"json_object" mode like OpenAI's.
+  // Standard workaround: seed the model's own turn with an opening "{" (the
+  // "assistant prefill" technique) so it continues valid JSON from there
+  // rather than wrapping the object in prose or markdown fences.
   const completion = await withRetry(() =>
-    openai.chat.completions.create({
-      model: SUMMARIZER_MODEL,
-      messages: [{ role: "user", content: prompt }],
-      response_format: { type: "json_object" },
-    }),
+    bedrock.send(
+      new ConverseCommand({
+        modelId: SUMMARIZER_MODEL,
+        messages: [
+          { role: "user", content: [{ text: prompt }] },
+          { role: "assistant", content: [{ text: "{" }] },
+        ],
+      }),
+    ),
   );
 
-  const raw = completion.choices[0]?.message?.content;
-  if (!raw) return;
+  const continuation = completion.output?.message?.content
+    ?.map((block) => block.text)
+    .filter((text): text is string => Boolean(text))
+    .join("");
+  if (!continuation) return;
 
   let parsed: SummarizerOutput;
   try {
-    parsed = JSON.parse(raw);
+    parsed = JSON.parse(`{${continuation}`);
   } catch {
     return; // a malformed summary shouldn't take down the DM turn that triggered it
   }

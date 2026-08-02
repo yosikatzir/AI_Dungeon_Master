@@ -42,3 +42,14 @@ API_Key.txt
 
 # test/coverage
 /coverage
+
+# terraform (state and tfvars carry account-specific/local details; the lock
+# file is tracked on purpose, like a package-lock.json for providers).
+# infra/ itself uses a remote S3 backend, but infra/bootstrap/ deliberately
+# keeps local state (it creates the bucket infra/ then stores state in), so
+# these patterns cover both.
+/infra/**/.terraform/
+/infra/**/terraform.tfstate
+/infra/**/terraform.tfstate.*
+/infra/**/*.tfvars
+/infra/**/*.tfplan

@@ -1,4 +1,5 @@
 import OpenAI, { APIError } from "openai";
+import { AiError } from "@/lib/ai/errors";
 
 if (!process.env.OPENAI_API_KEY) {
   throw new Error("OPENAI_API_KEY must be set in .env.local. See .env.example.");
@@ -6,17 +7,6 @@ if (!process.env.OPENAI_API_KEY) {
 
 // Server-side only — never import this module from a Client Component.
 export const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
-
-/** Thrown by withRetry once retries are exhausted; `userFacing` is safe to show in chat. */
-export class AiError extends Error {
-  constructor(
-    message: string,
-    public readonly userFacing: string,
-  ) {
-    super(message);
-    this.name = "AiError";
-  }
-}
 
 function isRetryable(err: unknown): boolean {
   if (err instanceof APIError) {
