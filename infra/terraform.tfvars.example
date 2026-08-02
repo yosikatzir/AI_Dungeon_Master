@@ -1,0 +1,12 @@
+# Copy to terraform.tfvars and fill in. terraform.tfvars is gitignored.
+
+# Your current public IP in CIDR form, e.g. "203.0.113.7/32".
+# Find it with: curl -s https://checkip.amazonaws.com
+admin_cidr = "REPLACE_ME/32"
+
+# Defaults below match the approved plan; override only if needed.
+# aws_profile          = "personal"
+# region               = "us-east-1"
+# instance_type        = "t4g.small"
+# ssh_public_key_path  = "~/.ssh/family-table-aws.pub"
+# data_volume_size_gb  = 20

@@ -289,18 +289,42 @@ no horizontal overflow at 375px, and the party/log/character tabs each show
 only their own panel on mobile while the three panels sit side by side again
 above the `md` breakpoint.
 
-## Moving to AWS later
+## Running on AWS
 
-- Move `./data/app.db` to a persistent EBS-backed path (SQLite is a single
-  file, so this is a straight copy).
-- Move `./data/images/` to S3 (or keep on EBS) and update the image storage
-  module's base path/URL signing accordingly.
-- Run the custom Node server (`server.ts`) behind a reverse proxy (nginx or
-  an ALB) with TLS terminated there, and make sure the proxy is configured
-  to pass through WebSocket upgrades for the `/api/socket` path (Socket.IO
-  needs this); `npm run build && npm start` works unchanged.
-- Presence tracking is in-memory per process — fine for a single instance
-  (the expected self-host setup), but wouldn't survive a multi-instance
-  deployment without moving it to a shared store (e.g. Redis).
-- Set `OPENAI_API_KEY` and `SESSION_SECRET` as real environment variables
-  (e.g. via SSM Parameter Store) instead of `.env.local`.
+Deployed via Terraform in [`infra/`](infra/): a single EC2 instance (`t4g.small`,
+Amazon Linux 2023, no Docker — the same `npm run build && npm start` as local),
+behind nginx, which handles TLS and proxies everything — including WebSocket
+upgrades for `/api/socket` — to the app on `127.0.0.1:3000`. `./data/app.db` and
+`./data/images/` live on a separate EBS volume (`/opt/family-table/app/data`)
+whose lifecycle is decoupled from the instance, so replacing/resizing the
+instance doesn't touch game data. `OPENAI_API_KEY`/`SESSION_SECRET` live in AWS
+Secrets Manager and are fetched into `.env.local` on every service start (see
+`infra/templates/user_data.sh.tftpl` and `family-table.service`).
+
+No domain is configured yet, so nginx terminates HTTPS with a self-signed
+certificate (regenerated only if missing, stored on the persistent data volume).
+This isn't cosmetic: the app's session cookie is `Secure`-flagged in production
+(`lib/session.ts`), so plain HTTP can never hold a login — browsers silently
+refuse to store `Secure` cookies without TLS. Visiting the site shows a one-time
+"connection isn't private" warning (click through — Advanced → Proceed); once
+there's a real domain, swap in a Let's Encrypt cert via `certbot --nginx`
+against `infra/templates/nginx.conf` and remove the self-signed fallback.
+
+Redeploy after pushing code changes:
+
+```bash
+./scripts/deploy-aws.sh
+```
+
+This is a **single, non-scalable instance by design** — presence tracking is
+in-memory per process and the DB is one SQLite file, so there's deliberately no
+ASG/multi-instance setup (see `infra/`'s plan notes for the full reasoning).
+
+One packaging quirk worth knowing if `infra/templates/user_data.sh.tftpl` is
+ever touched: `better-sqlite3`'s bundled prebuilt binary is linked against a
+newer glibc than Amazon Linux 2023 ships (`ERR_DLOPEN_FAILED: GLIBC_2.38 not
+found`), and the package's own `"gypfile": false` disables npm's usual
+automatic node-gyp build. Both `user_data.sh.tftpl` and `scripts/deploy-aws.sh`
+work around this by running better-sqlite3's own `build-release` script
+directly and deleting the incompatible bundled prebuild so its loader falls
+back to the freshly compiled one.

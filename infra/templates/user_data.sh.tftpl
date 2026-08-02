@@ -1,0 +1,135 @@
+#!/bin/bash
+set -euo pipefail
+exec > >(tee -a /var/log/user-data.log) 2>&1
+
+echo "=== Family Table: instance setup starting $(date -u) ==="
+
+# --- OS packages ---
+dnf update -y
+dnf install -y nginx git gcc-c++ make python3 openssl
+
+# Node 22 via NodeSource (AL2023's own repo lags behind current LTS)
+curl -fsSL https://rpm.nodesource.com/setup_22.x | bash -
+dnf install -y nodejs
+
+# --- Swapfile: cheap insurance against `next build` OOM on a small instance ---
+if [ ! -f /swapfile ]; then
+  fallocate -l 2G /swapfile
+  chmod 600 /swapfile
+  mkswap /swapfile
+  swapon /swapfile
+  echo '/swapfile none swap sw 0 0' >> /etc/fstab
+fi
+
+# --- App user + directory ---
+mkdir -p /opt/family-table
+id -u family-table >/dev/null 2>&1 || useradd -r -m -d /opt/family-table -s /sbin/nologin family-table
+chown -R family-table:family-table /opt/family-table
+
+# --- App code (public repo, no credentials needed) ---
+if [ ! -d /opt/family-table/app/.git ]; then
+  sudo -u family-table git clone "${repo_url}" /opt/family-table/app
+fi
+
+# --- Resolve and mount the persistent data volume ---
+# Nitro instances (t4g) expose EBS volumes as NVMe regardless of the device
+# name given at attach time, so find the non-root NVMe disk instead of
+# assuming a fixed path.
+ROOT_DEV=$(lsblk -no PKNAME "$(findmnt -no SOURCE /)")
+DATA_DEV=""
+for dev in /dev/nvme*n1; do
+  [ -e "$dev" ] || continue
+  base=$(basename "$dev")
+  if [ "$base" != "$ROOT_DEV" ]; then
+    DATA_DEV="$dev"
+    break
+  fi
+done
+
+if [ -z "$DATA_DEV" ]; then
+  echo "ERROR: could not find the attached data volume (non-root NVMe disk)" >&2
+  exit 1
+fi
+
+if ! blkid "$DATA_DEV" >/dev/null 2>&1; then
+  mkfs -t xfs "$DATA_DEV"
+fi
+
+mkdir -p /opt/family-table/app/data
+UUID=$(blkid -s UUID -o value "$DATA_DEV")
+grep -q "$UUID" /etc/fstab || echo "UUID=$UUID  /opt/family-table/app/data  xfs  defaults,nofail  0  2" >> /etc/fstab
+mountpoint -q /opt/family-table/app/data || mount /opt/family-table/app/data
+
+chown -R family-table:family-table /opt/family-table
+
+# --- Self-signed TLS cert (on the persistent data volume, so it survives
+# instance replacement) ---
+# No domain exists yet, but the app's session cookie is Secure-flagged in
+# production (lib/session.ts), so plain HTTP can never hold a login — nginx
+# must terminate real HTTPS even without a CA-trusted cert. Browsers show a
+# one-time click-through warning; swap for a Let's Encrypt cert once there's
+# a domain.
+mkdir -p /opt/family-table/app/data/tls
+if [ ! -f /opt/family-table/app/data/tls/selfsigned.crt ]; then
+  openssl req -x509 -nodes -days 3650 -newkey rsa:2048 \
+    -keyout /opt/family-table/app/data/tls/selfsigned.key \
+    -out /opt/family-table/app/data/tls/selfsigned.crt \
+    -subj "/CN=family-table" \
+    -addext "subjectAltName=IP:${public_ip}"
+fi
+chmod 644 /opt/family-table/app/data/tls/selfsigned.crt /opt/family-table/app/data/tls/selfsigned.key
+
+# --- Secret fetch script (re-run on every service start, see systemd unit) ---
+cat > /opt/family-table/app/fetch-secrets.sh << 'FETCHEOF'
+#!/bin/bash
+set -euo pipefail
+aws secretsmanager get-secret-value \
+  --secret-id "${secret_name}" \
+  --region "${region}" \
+  --query SecretString --output text \
+  > /opt/family-table/app/.env.local
+chmod 600 /opt/family-table/app/.env.local
+FETCHEOF
+chmod +x /opt/family-table/app/fetch-secrets.sh
+chown family-table:family-table /opt/family-table/app/fetch-secrets.sh
+
+# --- First build ---
+# Requires the secret to already be populated in Secrets Manager (OPENAI_API_KEY
+# is read at module-import time by lib/ai/openai.ts, so it must exist before
+# `npm run build`, not just before `npm start`). If this fails because the
+# secret is still empty, populate it and re-run:
+#   sudo -u family-table /opt/family-table/app/fetch-secrets.sh
+#   sudo -u family-table bash -lc 'cd /opt/family-table/app && npm ci && npm run build && npm run seed'
+sudo -u family-table /opt/family-table/app/fetch-secrets.sh
+sudo -u family-table bash -lc 'cd /opt/family-table/app && npm ci'
+
+# better-sqlite3 ships "gypfile": false, which disables npm's implicit
+# node-gyp build, and its bundled prebuilds/linux-arm64.node is linked
+# against a newer glibc than Amazon Linux 2023 ships (ERR_DLOPEN_FAILED:
+# GLIBC_2.38 not found). Its own binding.js unconditionally prefers that
+# file if present (existence check only, no compatibility check), so
+# compiling from source is not enough on its own — the incompatible
+# prebuild must also be removed so the loader falls back to the build we
+# just produced.
+sudo -u family-table bash -lc '
+  cd /opt/family-table/app/node_modules/better-sqlite3 &&
+  npm run build-release &&
+  rm -f prebuilds/linux-arm64.node
+'
+
+sudo -u family-table bash -lc 'cd /opt/family-table/app && npm run build && npm run seed'
+
+# --- systemd unit + nginx config ---
+cat > /etc/systemd/system/family-table.service << 'SERVICEEOF'
+${systemd_unit}
+SERVICEEOF
+
+cat > /etc/nginx/nginx.conf << 'NGINXEOF'
+${nginx_conf}
+NGINXEOF
+
+systemctl daemon-reload
+systemctl enable --now family-table
+systemctl enable --now nginx
+
+echo "=== Family Table: instance setup complete $(date -u) ==="
