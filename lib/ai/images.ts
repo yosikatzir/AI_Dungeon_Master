@@ -46,11 +46,21 @@ export function buildReferenceManifest(names: string[]): string {
 
 /** Detects which of the given candidates (party members, NPCs) are named in
  *  free text — word-boundary and case-insensitive, so a short name doesn't
- *  false-positive on a partial match inside an unrelated word. */
+ *  false-positive on a partial match inside an unrelated word. Matches on
+ *  any individual word of the candidate's name, not just the name in full:
+ *  players refer to characters informally ("Saulrok", not the full
+ *  `Saulrok "Riff-Render" Wylde`), so requiring the whole punctuated name
+ *  as one literal substring missed nearly every real reference. */
 export function detectSubjectsInText(text: string, candidates: ImageSubject[]): ImageSubject[] {
   return candidates.filter((c) => {
-    const escaped = c.name.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+    const tokens = c.name
+      .split(/\s+/)
+      .map((t) => t.replace(/^[^\w]+|[^\w]+$/g, "")) // strip surrounding punctuation/quotes, keep internal (e.g. "Riff-Render")
+      .filter((t) => t.length > 0);
+    return tokens.some((token) => {
+      const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+      return new RegExp(`\\b${escaped}\\b`, "i").test(text);
+    });
   });
 }
 
