@@ -4,6 +4,8 @@
 # Terraform (infra/) — this script only touches application code.
 set -euo pipefail
 
+export AWS_PROFILE="${AWS_PROFILE:-personal}"
+
 cd "$(dirname "$0")/../infra"
 IP=$(terraform output -raw public_ip)
 KEY=$(terraform output -raw ssh_command | sed -n 's/.*-i \([^ ]*\).*/\1/p')
@@ -11,7 +13,7 @@ KEY=$(terraform output -raw ssh_command | sed -n 's/.*-i \([^ ]*\).*/\1/p')
 echo "Deploying to $IP ..."
 ssh -i "$KEY" -o StrictHostKeyChecking=accept-new "ec2-user@$IP" '
   set -euo pipefail
-  sudo -u family-table bash -lc "cd /opt/family-table/app && git pull && npm ci"
+  sudo -u family-table bash -lc "cd /opt/family-table/app && git pull && npm install"
   # better-sqlite3 bundled prebuilds/linux-arm64.node needs a newer glibc than
   # Amazon Linux 2023 ships; every fresh npm ci reintroduces it, so rebuild
   # from source and remove it each time. See infra/templates/user_data.sh.tftpl

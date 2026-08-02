@@ -115,9 +115,14 @@ chown family-table:family-table /opt/family-table/app/fetch-secrets.sh
 # `npm run build`, not just before `npm start`). If this fails because the
 # secret is still empty, populate it and re-run:
 #   sudo -u family-table /opt/family-table/app/fetch-secrets.sh
-#   sudo -u family-table bash -lc 'cd /opt/family-table/app && npm ci && npm run build && npm run seed'
+#   sudo -u family-table bash -lc 'cd /opt/family-table/app && npm install && npm run build && npm run seed'
 sudo -u family-table /opt/family-table/app/fetch-secrets.sh
-sudo -u family-table bash -lc 'cd /opt/family-table/app && npm ci'
+# `npm install` rather than `npm ci`: the committed lockfile can end up with
+# platform-specific optional-dependency resolutions (e.g. @emnapi/* WASM
+# shims) from whichever machine last ran `npm install` locally, which `npm
+# ci`'s strict lockfile-match check rejects on a different OS/arch. `npm
+# install` reconciles instead of hard-failing.
+sudo -u family-table bash -lc 'cd /opt/family-table/app && npm install'
 
 # better-sqlite3 ships "gypfile": false, which disables npm's implicit
 # node-gyp build, and its bundled prebuilds/linux-arm64.node is linked
