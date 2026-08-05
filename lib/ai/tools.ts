@@ -15,6 +15,7 @@ import { MONSTERS } from "@/content/srd/monsters";
 import {
   buildNpcStatBlock,
   isNpcDefeated,
+  npcPassiveInsight,
   npcPassivePerception,
   type NpcRosterEntry,
 } from "@/lib/npcs";
@@ -81,7 +82,12 @@ export const DM_TOOLS: Tool[] = [
         dc: {
           type: "number",
           description:
-            "The number to beat, and you should almost always set it — without it the engine can't judge success and you'd be eyeballing the result. Use the opposing creature's passive Perception/Insight from the NPC roster when someone specific is being beaten, that character's AC for an attack, or the standard ladder otherwise (10 easy, 15 moderate, 20 hard, 25 near-impossible).",
+            "The number to beat, and you should almost always set it — without it the engine can't judge success and you'd be eyeballing the result. Use the standard ladder when nothing specific opposes the action: 10 easy, 15 moderate, 20 hard, 25 near-impossible. When a creature IS what's being beaten, use opposedByNpc instead and leave this out.",
+        },
+        opposedByNpc: {
+          type: "string",
+          description:
+            "The NPC being beaten, when the action is opposed by a specific creature — sneaking past a guard, lying to a merchant, picking a pocket. Exact name from the NPC roster. The DC is then computed from THEIR stat block (passive Perception for stealth, passive Insight for deception) instead of being guessed, which is always more accurate than the generic ladder. They must have stats: if they don't, stat them with update_npc first in this same turn.",
         },
         reason: { type: "string", description: "One short phrase for why this roll is needed." },
       },
@@ -269,6 +275,36 @@ function requireStattedNpc(campaignId: number, npcName: string) {
   return { entry, stats: entry.stats };
 }
 
+/** Which of the opposing creature's passive scores a player's skill is measured
+ *  against. Anything not listed falls back to passive Perception — the common
+ *  case for "can they tell what I'm doing". */
+const OPPOSING_PASSIVE_BY_SKILL: Record<string, "perception" | "insight"> = {
+  stealth: "perception",
+  sleight_of_hand: "perception",
+  deception: "insight",
+  persuasion: "insight",
+  performance: "insight",
+};
+
+/**
+ * Turns "opposed by the gate guard" into a real DC from that guard's stat
+ * block. This exists so grounding a check in a creature is *easier* for the DM
+ * than guessing at it — it only has to name who is resisting, and the number
+ * follows. Deliberately throws when the NPC isn't statted: the error text tells
+ * the DM to stat them, which it can do in the same turn, and that's a better
+ * outcome than silently accepting an invented DC.
+ */
+function dcFromOpposingNpc(
+  campaignId: number,
+  npcName: string,
+  skill: string | undefined,
+): { dc: number; label: string } {
+  const { entry, stats } = requireStattedNpc(campaignId, npcName);
+  const sense = (skill && OPPOSING_PASSIVE_BY_SKILL[skill]) || "perception";
+  const dc = sense === "insight" ? npcPassiveInsight(stats) : npcPassivePerception(stats);
+  return { dc, label: `${entry.name}'s passive ${sense === "insight" ? "Insight" : "Perception"}` };
+}
+
 function saveNpcStats(campaignId: number, npcName: string, stats: NpcRosterEntry["stats"]): void {
   const campaign = getCampaign(campaignId);
   if (!campaign) throw new ToolExecutionError("Campaign not found.");
@@ -328,18 +364,25 @@ export async function executeTool(
     switch (toolName) {
       case "request_roll": {
         const member = requireCharacter(campaignId, args.characterName as string);
+        const skill = args.skill as string | undefined;
+        const opposedBy = (args.opposedByNpc as string | undefined)?.trim();
+        // A named opponent's real passive score beats any DC the DM would
+        // otherwise guess, so it wins over an explicitly-passed dc.
+        const opposed = opposedBy ? dcFromOpposingNpc(campaignId, opposedBy, skill) : null;
         const request: PendingRollRequest = {
           characterId: member.characterId!,
           characterName: member.characterName!,
           rollType: args.rollType as PendingRollRequest["rollType"],
           ability: args.ability as string | undefined,
-          skill: args.skill as string | undefined,
-          dc: args.dc as number | undefined,
+          skill,
+          dc: opposed?.dc ?? (args.dc as number | undefined),
           reason: (args.reason as string) ?? "",
         };
         setPendingRollRequest(campaignId, request);
         return {
-          resultText: `Waiting on ${member.characterName} to roll.`,
+          resultText: `Waiting on ${member.characterName} to roll.${
+            opposed ? ` DC ${opposed.dc} — ${opposed.label}.` : ""
+          }`,
           broadcastContent: `The DM asks ${member.characterName} to make ${describeRoll(request)}${
             request.reason ? ` — ${request.reason}` : ""
           }.`,

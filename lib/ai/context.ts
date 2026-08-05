@@ -5,7 +5,7 @@ import { computeCharacterSheet } from "@/lib/rules/characterSheet";
 import { getCombatState } from "@/lib/engine/combat";
 import { getOnlineUserIds } from "@/lib/realtime/presence";
 import { formatNpcStatLine } from "@/lib/npcs";
-import { buildDmSystemPrompt, buildMetaSystemPrompt } from "@/prompts/dm-system";
+import { buildDmSystemPrompt, buildMetaSystemPrompt, buildTurnReminders } from "@/prompts/dm-system";
 import { RECENT_MESSAGE_WINDOW } from "@/lib/ai/config";
 
 /** Full text beyond this length is ellipsized — keeps a multi-character party from blowing the context budget every turn. */
@@ -245,6 +245,12 @@ export function assembleDmContext(campaignId: number, options: DmContextOptions 
           .join("\n")}`,
       });
     }
+  }
+
+  if (!isMeta) {
+    // Deliberately last: the rules it restates drift most on the smaller model
+    // the DM runs on, and this is the closest system block to the conversation.
+    system.push({ text: buildTurnReminders() });
   }
 
   const messages = coalesceTurns(turns);

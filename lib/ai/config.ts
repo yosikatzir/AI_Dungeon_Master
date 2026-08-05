@@ -7,15 +7,21 @@
  * foundation-model IDs — invoking the bare ID fails with "on-demand
  * throughput isn't supported" for these models.
  *
- * DM_MODEL is Haiku, not the originally-intended Sonnet: this AWS account's
- * Bedrock entitlement doesn't currently include Sonnet-tier Claude models —
- * confirmed live via `aws bedrock get-foundation-model-availability`, which
- * shows `agreementAvailability: NOT_AVAILABLE` for every Sonnet model tried
- * (including the older 4.5) while Haiku shows `AVAILABLE`. This is an
- * account-level entitlement gap, not an IAM or code issue. Once Sonnet
- * access is granted (Bedrock console / AWS support), swap this back.
+ * DM_MODEL is Sonnet 4.6. An earlier pass concluded Sonnet was unavailable on
+ * this account based on `aws bedrock get-foundation-model-availability`
+ * reporting `agreementAvailability: NOT_AVAILABLE` — but that API answers for
+ * the BARE foundation model, and these models can only be invoked through a
+ * regional inference profile anyway. Invoking `us.anthropic.claude-sonnet-4-6`
+ * directly succeeds; the availability check was simply the wrong probe. Test
+ * with a real `converse` call, not the availability API. (Sonnet 5 is a
+ * genuine gap — its inference profile returns AccessDeniedException.)
+ *
+ * The upgrade matters beyond prose quality: the DM's hard rules (keep
+ * narration to a few sentences, always roll before narrating an uncertain
+ * outcome, stat an NPC before rolling against it) are instruction-following
+ * problems, and Haiku measurably drifted on all three in live play.
  */
-export const DM_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
+export const DM_MODEL = "us.anthropic.claude-sonnet-4-6";
 export const SUMMARIZER_MODEL = "us.anthropic.claude-haiku-4-5-20251001-v1:0";
 export const IMAGE_MODEL = "gpt-image-1";
 

@@ -198,13 +198,25 @@ messages. `lib/ai/summarize.ts` uses the assistant-message-prefill trick
 (seed the reply with `{` so the model continues valid JSON) since Bedrock/
 Claude has no `response_format:"json_object"` equivalent.
 
-`DM_MODEL` is currently Haiku 4.5, not Sonnet: this AWS account's Bedrock
-entitlement doesn't include Sonnet-tier Claude models (confirmed live via
-`aws bedrock get-foundation-model-availability`, which shows
-`agreementAvailability: NOT_AVAILABLE` for every Sonnet model tried,
-including the older 4.5, while Haiku shows `AVAILABLE`) — an account-level
-gap, not an IAM or code issue. Swap `lib/ai/config.ts`'s `DM_MODEL` back to
-`us.anthropic.claude-sonnet-5` once access is granted.
+`DM_MODEL` is `us.anthropic.claude-sonnet-4-6`. An earlier pass ran the DM on
+Haiku 4.5, having concluded from `aws bedrock
+get-foundation-model-availability` (`agreementAvailability: NOT_AVAILABLE`
+for every Sonnet model) that this account had no Sonnet entitlement. That
+conclusion was wrong, and the lesson is worth keeping: **that API answers for
+the bare foundation model, which is not how these models are invoked at all**
+— they require a regional inference profile. A real `converse` call against
+`us.anthropic.claude-sonnet-4-6` succeeds. Probe with an actual invocation,
+not the availability API. (Sonnet 5 is a genuine gap: its inference profile
+returns `AccessDeniedException`.)
+
+The upgrade is not just prose quality. The DM's hard rules — keep narration
+short, always roll before narrating an uncertain outcome, stat an NPC before
+rolling against it — are instruction-following problems, and Haiku drifted on
+all three in live play: four-paragraph replies, and a plain Deception attempt
+resolved in prose without ever rolling. Sonnet 4.6 statted an adversary
+unprompted (AC, HP, ability scores, Perception) and set the check's DC from
+her passive Perception on the first try. `SUMMARIZER_MODEL` stays on Haiku —
+summarization is a mechanical task where the cheaper model is fine.
 
 Image generation deliberately stayed on OpenAI's `gpt-image-1`
 (`lib/ai/images.ts`, unchanged) — investigated live before migrating and

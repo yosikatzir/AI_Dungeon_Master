@@ -19,10 +19,14 @@ describe("DM_TOOLS", () => {
     expect(schema.json.properties.monsterId.description).toContain("goblin");
   });
 
-  it("tells the DM to set a DC on request_roll", () => {
+  it("offers request_roll both DC paths: a named opponent, or the generic ladder", () => {
     const requestRoll = DM_TOOLS.find((t) => t.toolSpec?.name === "request_roll");
     const schema = requestRoll?.toolSpec?.inputSchema as { json: { properties: Record<string, { description?: string }> } };
-    expect(schema.json.properties.dc.description).toMatch(/passive Perception/i);
+    // The opponent's real passive score is the grounded path...
+    expect(schema.json.properties.opposedByNpc.description).toMatch(/passive Perception/i);
+    expect(schema.json.properties.opposedByNpc.description).toMatch(/update_npc/i);
+    // ...and the ladder is the explicit fallback when nothing specific opposes.
+    expect(schema.json.properties.dc.description).toMatch(/10 easy, 15 moderate/i);
   });
 });
 
