@@ -246,6 +246,49 @@ Campaign chat infrastructure (Phase 3): a Socket.IO room per campaign,
 membership + message history in SQLite, and live presence tracked
 in-memory per server process.
 
+### NPC stat blocks and the DM's side of the dice
+
+Player characters have always had real sheets and rolled through the engine,
+so their half of any check was ground truth. The other half wasn't: an NPC
+was a name, a description and a disposition, which meant "can I sneak past
+the guard?" had no guard to be measured against — the DM invented both the
+DC and the outcome, and the dice stopped deciding anything.
+
+`lib/npcs.ts` gives NPCs stat blocks. They come from one of two places: an
+SRD monster id (the seeded `monsters` table — goblin, wolf, ogre and friends,
+which were in the database but unreachable by the DM until now) or scores the
+DM writes itself for an original NPC, with explicit `ac`/`hpMax`/`abilities`
+overriding the monster's where they differ. Both paths produce the same
+shape, and derived numbers (skill bonuses, saving throws, passive Perception
+and Insight) are computed from it rather than stated. Every statted NPC's
+line appears in the campaign-state block each turn, so the numbers the DM
+sets DCs from are in front of it instead of being recalled or improvised.
+
+Three tools follow from that. `update_npc` gained the stat fields.
+`roll_npc` (`lib/engine/npcRolls.ts`) rolls the NPC's own d20 — a guard's
+Perception, a monster's attack, an ogre's saving throw — through the same
+`resolveD20Check` the players use, returning a real result immediately
+without ending the DM's turn. Dice bias (`lib/engine/bias.ts`) deliberately
+does *not* apply here: that's a per-character luck adjustment meant to keep
+kids from having a miserable session, and pointing it at the monsters would
+defeat the purpose. `damage_npc`/`heal_npc` track NPC hit points, so a fight
+ends when the creature actually runs out rather than when the scene feels
+done.
+
+Rolling against a specific creature now has a real target: hiding is set
+against that NPC's passive Perception, lying against its passive Insight,
+attacking against its AC. The system prompt spells out the sequence — player
+declares an action, DM calls `request_roll`, turn ends, player rolls, and
+only then does the DM narrate what the die produced — along with which
+actions always need a roll, which never should, and the standard DC ladder
+for everything without a specific opponent.
+
+One subtlety worth knowing about: the summarizer rewrites the NPC roster
+every 40 messages, but it never sees stat blocks and can't return them.
+`mergeRosterPreservingStats` merges its rewritten prose over the existing
+entries by name, so a summarization pass can't silently strip a wounded
+monster back to full health with no AC.
+
 ### Table talk (out-of-character channel)
 
 Every campaign has a second, out-of-character channel alongside the story

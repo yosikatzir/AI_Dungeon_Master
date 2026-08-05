@@ -4,6 +4,7 @@ import { resolveCharacter } from "@/lib/characters";
 import { computeCharacterSheet } from "@/lib/rules/characterSheet";
 import { getCombatState } from "@/lib/engine/combat";
 import { getOnlineUserIds } from "@/lib/realtime/presence";
+import { formatNpcStatLine } from "@/lib/npcs";
 import { buildDmSystemPrompt, buildMetaSystemPrompt } from "@/prompts/dm-system";
 import { RECENT_MESSAGE_WINDOW } from "@/lib/ai/config";
 
@@ -93,10 +94,25 @@ function buildStateBlock(campaign: Campaign): string {
         .join("; ")}.`
     : "Not currently in combat.";
 
+  // Statted NPCs get their numbers inline: these are the DCs and targets the
+  // DM sets checks against, so they have to be visible every turn rather than
+  // recalled or invented. Unstatted NPCs are flagged as such so the DM knows
+  // it needs to stat them before rolling against them.
   const npcRosterText =
     campaign.npcRoster.length > 0
       ? campaign.npcRoster
-          .map((n) => `- ${n.name}: ${n.description}${n.disposition ? ` (${n.disposition})` : ""}`)
+          .map((n) => {
+            const head = `- ${n.name}: ${n.description}${n.disposition ? ` (${n.disposition})` : ""}`;
+            if (!n.stats) return `${head}\n    [no stats — cannot be rolled against yet]`;
+            const lines = [`${head}\n    ${formatNpcStatLine(n)}`];
+            if (n.stats.hpCurrent <= 0) lines.push(`    DEFEATED`);
+            if (n.stats.actions?.length) {
+              lines.push(
+                ...n.stats.actions.map((a) => `    Action — ${a.name}: ${a.description}`),
+              );
+            }
+            return lines.join("\n");
+          })
           .join("\n")
       : "(none yet)";
 

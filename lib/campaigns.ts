@@ -2,11 +2,10 @@ import db from "@/lib/db";
 import type { CreateCampaignInput } from "@/lib/validation/campaign";
 import type { RollOutcome } from "@/lib/engine/rolls";
 
-export interface NpcRosterEntry {
-  name: string;
-  description: string;
-  disposition: string;
-}
+// Defined in lib/npcs.ts alongside the stat-block logic; re-exported here so
+// the many existing `from "@/lib/campaigns"` imports keep working.
+import type { NpcRosterEntry } from "@/lib/npcs";
+export type { NpcRosterEntry };
 
 export interface PlotLogEntry {
   summary: string;
