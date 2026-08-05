@@ -92,9 +92,11 @@ resource "aws_iam_role_policy" "bedrock" {
       Effect = "Allow"
       Action = ["bedrock:InvokeModel", "bedrock:InvokeModelWithResponseStream"]
       Resource = [
-        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-5",
+        # An inference profile fans out across regions, so the underlying
+        # foundation-model ARNs must be granted with a wildcard region too.
+        "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6",
         "arn:aws:bedrock:*::foundation-model/anthropic.claude-haiku-4-5-20251001-v1:0",
-        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-5",
+        "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-sonnet-4-6",
         "arn:aws:bedrock:${var.region}:${data.aws_caller_identity.current.account_id}:inference-profile/us.anthropic.claude-haiku-4-5-20251001-v1:0",
       ]
     }]

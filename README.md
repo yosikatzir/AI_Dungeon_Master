@@ -198,13 +198,25 @@ messages. `lib/ai/summarize.ts` uses the assistant-message-prefill trick
 (seed the reply with `{` so the model continues valid JSON) since Bedrock/
 Claude has no `response_format:"json_object"` equivalent.
 
-`DM_MODEL` is currently Haiku 4.5, not Sonnet: this AWS account's Bedrock
-entitlement doesn't include Sonnet-tier Claude models (confirmed live via
-`aws bedrock get-foundation-model-availability`, which shows
-`agreementAvailability: NOT_AVAILABLE` for every Sonnet model tried,
-including the older 4.5, while Haiku shows `AVAILABLE`) — an account-level
-gap, not an IAM or code issue. Swap `lib/ai/config.ts`'s `DM_MODEL` back to
-`us.anthropic.claude-sonnet-5` once access is granted.
+`DM_MODEL` is `us.anthropic.claude-sonnet-4-6`. An earlier pass ran the DM on
+Haiku 4.5, having concluded from `aws bedrock
+get-foundation-model-availability` (`agreementAvailability: NOT_AVAILABLE`
+for every Sonnet model) that this account had no Sonnet entitlement. That
+conclusion was wrong, and the lesson is worth keeping: **that API answers for
+the bare foundation model, which is not how these models are invoked at all**
+— they require a regional inference profile. A real `converse` call against
+`us.anthropic.claude-sonnet-4-6` succeeds. Probe with an actual invocation,
+not the availability API. (Sonnet 5 is a genuine gap: its inference profile
+returns `AccessDeniedException`.)
+
+The upgrade is not just prose quality. The DM's hard rules — keep narration
+short, always roll before narrating an uncertain outcome, stat an NPC before
+rolling against it — are instruction-following problems, and Haiku drifted on
+all three in live play: four-paragraph replies, and a plain Deception attempt
+resolved in prose without ever rolling. Sonnet 4.6 statted an adversary
+unprompted (AC, HP, ability scores, Perception) and set the check's DC from
+her passive Perception on the first try. `SUMMARIZER_MODEL` stays on Haiku —
+summarization is a mechanical task where the cheaper model is fine.
 
 Image generation deliberately stayed on OpenAI's `gpt-image-1`
 (`lib/ai/images.ts`, unchanged) — investigated live before migrating and
@@ -245,6 +257,49 @@ room; confirming triggers generation.
 Campaign chat infrastructure (Phase 3): a Socket.IO room per campaign,
 membership + message history in SQLite, and live presence tracked
 in-memory per server process.
+
+### NPC stat blocks and the DM's side of the dice
+
+Player characters have always had real sheets and rolled through the engine,
+so their half of any check was ground truth. The other half wasn't: an NPC
+was a name, a description and a disposition, which meant "can I sneak past
+the guard?" had no guard to be measured against — the DM invented both the
+DC and the outcome, and the dice stopped deciding anything.
+
+`lib/npcs.ts` gives NPCs stat blocks. They come from one of two places: an
+SRD monster id (the seeded `monsters` table — goblin, wolf, ogre and friends,
+which were in the database but unreachable by the DM until now) or scores the
+DM writes itself for an original NPC, with explicit `ac`/`hpMax`/`abilities`
+overriding the monster's where they differ. Both paths produce the same
+shape, and derived numbers (skill bonuses, saving throws, passive Perception
+and Insight) are computed from it rather than stated. Every statted NPC's
+line appears in the campaign-state block each turn, so the numbers the DM
+sets DCs from are in front of it instead of being recalled or improvised.
+
+Three tools follow from that. `update_npc` gained the stat fields.
+`roll_npc` (`lib/engine/npcRolls.ts`) rolls the NPC's own d20 — a guard's
+Perception, a monster's attack, an ogre's saving throw — through the same
+`resolveD20Check` the players use, returning a real result immediately
+without ending the DM's turn. Dice bias (`lib/engine/bias.ts`) deliberately
+does *not* apply here: that's a per-character luck adjustment meant to keep
+kids from having a miserable session, and pointing it at the monsters would
+defeat the purpose. `damage_npc`/`heal_npc` track NPC hit points, so a fight
+ends when the creature actually runs out rather than when the scene feels
+done.
+
+Rolling against a specific creature now has a real target: hiding is set
+against that NPC's passive Perception, lying against its passive Insight,
+attacking against its AC. The system prompt spells out the sequence — player
+declares an action, DM calls `request_roll`, turn ends, player rolls, and
+only then does the DM narrate what the die produced — along with which
+actions always need a roll, which never should, and the standard DC ladder
+for everything without a specific opponent.
+
+One subtlety worth knowing about: the summarizer rewrites the NPC roster
+every 40 messages, but it never sees stat blocks and can't return them.
+`mergeRosterPreservingStats` merges its rewritten prose over the existing
+entries by name, so a summarization pass can't silently strip a wounded
+monster back to full health with no AC.
 
 ### Table talk (out-of-character channel)
 
@@ -300,11 +355,31 @@ request in chat and calling `request_image_confirmation`, which the player
 then confirms with one click before anything generates. A per-campaign
 gallery lives at `/campaigns/[id]/gallery`.
 
+**What the 🎨 button illustrates**: the DM composes the image prompt itself
+(`composeSceneImagePrompt` in `lib/ai/scenePrompt.ts`). It re-reads the last
+`SCENE_PROMPT_MESSAGE_WINDOW` story messages and returns
+`{description, characters}` — a purely visual paragraph plus exactly who is
+in frame — using the same assistant-prefill JSON trick as the summarizer.
+The player's text field stays optional and is passed in as a refinement of
+that moment (angle, focus, emphasis), never as the whole prompt.
+
+This replaced an earlier approach that used the campaign's stored
+`currentScene` as the prompt, which was wrong in a way that only showed up in
+real play: `currentScene` refreshes only when the DM chooses to call its
+`advance_scene` tool, which happens far less often than the story actually
+moves. A reported case had a bard fighting belowdecks while the illustration
+showed him performing for sailors up on deck — faithfully rendering a scene
+several beats stale. The recent transcript is the real record of where the
+story is, so that is what the illustration is now built from. If the compose
+call fails, the old stored-scene path still runs as a fallback rather than
+dropping the request.
+
 **Multi-reference composition**: a scene can depict several established
 subjects at once — the DM lists everyone actually present in `subjects`
 when calling `request_image_confirmation` (its exact party members and NPC
-roster names; the 🎨-button path instead detects them with a word-boundary
-name match, `detectSubjectsInText`, against the same candidates). Each named
+roster names; the 🎨-button path uses the `characters` list the DM returned
+when composing the prompt, falling back to `detectSubjectsInText`'s
+word-boundary name match against the same candidates). Each named
 subject gets its own reference file — an uploaded portrait first, otherwise
 the newest registered image tagged with that name (`findReferenceImages` /
 `pickBestReferenceImages` in `lib/images.ts`) — capped at 4 references,

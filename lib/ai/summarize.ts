@@ -91,8 +91,29 @@ Respond with ONLY a JSON object of this exact shape:
 
   updateCampaignMemory(campaignId, {
     summary: parsed.summary,
-    npcRoster: parsed.npcRoster ?? campaign.npcRoster,
+    npcRoster: mergeRosterPreservingStats(campaign.npcRoster, parsed.npcRoster),
     plotLog,
     lastSummarizedMessageId: newMessages[newMessages.length - 1].id,
+  });
+}
+
+/**
+ * The summarizer rewrites NPC prose, but it is never shown stat blocks and
+ * cannot return them — so its roster is merged over the existing one by name
+ * rather than replacing it. Without this, every summarization pass would
+ * silently strip the numbers the DM rolls against, and a wounded monster would
+ * come back at full health with no AC.
+ */
+export function mergeRosterPreservingStats(
+  existing: NpcRosterEntry[],
+  incoming: NpcRosterEntry[] | undefined,
+): NpcRosterEntry[] {
+  if (!incoming || incoming.length === 0) return existing;
+  const statsByName = new Map(
+    existing.filter((n) => n.stats).map((n) => [n.name.toLowerCase(), n.stats!]),
+  );
+  return incoming.map((entry) => {
+    const stats = statsByName.get(entry.name.toLowerCase());
+    return stats ? { ...entry, stats } : entry;
   });
 }

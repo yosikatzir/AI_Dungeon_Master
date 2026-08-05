@@ -5,6 +5,31 @@ function toolNames(tools: typeof DM_TOOLS): string[] {
   return tools.map((t) => t.toolSpec?.name).filter((name): name is string => Boolean(name));
 }
 
+describe("DM_TOOLS", () => {
+  it("exposes the NPC ground-truth tools the dice rules depend on", () => {
+    const names = new Set(toolNames(DM_TOOLS));
+    for (const name of ["roll_npc", "damage_npc", "heal_npc", "update_npc", "request_roll"]) {
+      expect(names.has(name)).toBe(true);
+    }
+  });
+
+  it("lists real monster ids in update_npc's schema so the DM can't invent one", () => {
+    const updateNpc = DM_TOOLS.find((t) => t.toolSpec?.name === "update_npc");
+    const schema = updateNpc?.toolSpec?.inputSchema as { json: { properties: Record<string, { description?: string }> } };
+    expect(schema.json.properties.monsterId.description).toContain("goblin");
+  });
+
+  it("offers request_roll both DC paths: a named opponent, or the generic ladder", () => {
+    const requestRoll = DM_TOOLS.find((t) => t.toolSpec?.name === "request_roll");
+    const schema = requestRoll?.toolSpec?.inputSchema as { json: { properties: Record<string, { description?: string }> } };
+    // The opponent's real passive score is the grounded path...
+    expect(schema.json.properties.opposedByNpc.description).toMatch(/passive Perception/i);
+    expect(schema.json.properties.opposedByNpc.description).toMatch(/update_npc/i);
+    // ...and the ladder is the explicit fallback when nothing specific opposes.
+    expect(schema.json.properties.dc.description).toMatch(/10 easy, 15 moderate/i);
+  });
+});
+
 describe("META_DM_TOOLS", () => {
   it("only exposes log_plot_event — the meta DM can't touch game state", () => {
     expect(toolNames(META_DM_TOOLS)).toEqual(["log_plot_event"]);

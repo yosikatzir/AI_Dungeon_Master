@@ -9,6 +9,17 @@ import {
   type PendingImageConfirmation,
 } from "@/lib/campaigns";
 import { findEquipmentByName } from "@/lib/content";
+// Static SRD data, not the seeded table — the tool schema is built at module
+// load, before the DB is necessarily ready, and these ids never differ.
+import { MONSTERS } from "@/content/srd/monsters";
+import {
+  buildNpcStatBlock,
+  isNpcDefeated,
+  npcPassiveInsight,
+  npcPassivePerception,
+  type NpcRosterEntry,
+} from "@/lib/npcs";
+import { performNpcRoll, describeNpcRoll, type NpcRollPurpose } from "@/lib/engine/npcRolls";
 import {
   applyDamage,
   applyHealing,
@@ -20,7 +31,7 @@ import {
   removeCondition,
   EngineValidationError,
 } from "@/lib/engine/mutations";
-import { ABILITIES } from "@/lib/rules/constants";
+import { ABILITIES, type Ability } from "@/lib/rules/constants";
 
 export class ToolExecutionError extends Error {}
 
@@ -36,6 +47,8 @@ export interface ToolExecutionResult {
   /** request_image_confirmation only: broadcast structurally so the room can show a confirm button. */
   imageConfirmation?: PendingImageConfirmation;
 }
+
+const MONSTER_IDS = MONSTERS.map((m) => m.id);
 
 const characterNameProp = {
   characterName: {
@@ -66,7 +79,16 @@ export const DM_TOOLS: Tool[] = [
         },
         ability: { type: "string", enum: ABILITIES, description: "Required for ability_check/saving_throw." },
         skill: { type: "string", description: "Required for skill_check, e.g. 'stealth', 'perception'." },
-        dc: { type: "number", description: "Difficulty class or target AC, if there is one." },
+        dc: {
+          type: "number",
+          description:
+            "The number to beat, and you should almost always set it — without it the engine can't judge success and you'd be eyeballing the result. Use the standard ladder when nothing specific opposes the action: 10 easy, 15 moderate, 20 hard, 25 near-impossible. When a creature IS what's being beaten, use opposedByNpc instead and leave this out.",
+        },
+        opposedByNpc: {
+          type: "string",
+          description:
+            "The NPC being beaten, when the action is opposed by a specific creature — sneaking past a guard, lying to a merchant, picking a pocket. Exact name from the NPC roster. The DC is then computed from THEIR stat block (passive Perception for stealth, passive Insight for deception) instead of being guessed, which is always more accurate than the generic ladder. They must have stats: if they don't, stat them with update_npc first in this same turn.",
+        },
         reason: { type: "string", description: "One short phrase for why this roll is needed." },
       },
       required: ["characterName", "rollType", "reason"],
@@ -129,17 +151,76 @@ export const DM_TOOLS: Tool[] = [
   }),
   tool(
     "update_npc",
-    "Add or update an entry in the NPC roster — do this whenever you introduce or develop a named NPC.",
+    "Add or update an entry in the NPC roster — do this whenever you introduce or develop a named NPC. Give stats to anyone the party might have to sneak past, fight, deceive, or otherwise roll against; a purely decorative NPC doesn't need them. Prefer `monsterId` when a standard creature fits — those numbers are already balanced.",
     {
       type: "object",
       properties: {
         name: { type: "string" },
         description: { type: "string", description: "One line: who they are and what they look like." },
         disposition: { type: "string", description: "e.g. 'friendly', 'suspicious of the party', 'hostile'." },
+        monsterId: {
+          type: "string",
+          description: `Standard creature to base stats on. Available: ${MONSTER_IDS.join(", ")}. Omit for an original NPC.`,
+        },
+        ac: { type: "number", description: "Armor Class. Overrides the monster's, or sets it for an original NPC." },
+        hpMax: { type: "number", description: "Maximum hit points. Overrides the monster's." },
+        abilities: {
+          type: "object",
+          description: "Ability SCORES (not modifiers), 1-30. Any omitted default to 10.",
+          properties: Object.fromEntries(ABILITIES.map((a) => [a, { type: "number" }])),
+        },
+        skills: {
+          type: "object",
+          description:
+            "Total skill bonuses including the ability modifier, keyed by skill id (e.g. {\"perception\": 4, \"stealth\": 6}). Only list skills this NPC is notably good at.",
+        },
+        savingThrows: {
+          type: "object",
+          description: "Total saving-throw bonuses for proficient saves only, keyed by ability (e.g. {\"wis\": 5}).",
+        },
+        cr: { type: "string", description: "Challenge rating, e.g. '1/4' or '3'." },
       },
       required: ["name", "description"],
     },
   ),
+  tool(
+    "roll_npc",
+    "Roll dice FOR an NPC or monster — their Perception to spot someone, their attack against a player's AC, their saving throw against a spell. Returns the real result immediately; you do NOT wait for a player. Use this any time the NPC's side of an action is uncertain, instead of deciding what happens.",
+    {
+      type: "object",
+      properties: {
+        npcName: { type: "string", description: "Exact name from the NPC roster. Must already have stats." },
+        rollType: { type: "string", enum: ["ability_check", "saving_throw", "skill_check", "attack"] },
+        ability: { type: "string", enum: ABILITIES, description: "Required for ability_check/saving_throw." },
+        skill: { type: "string", description: "Required for skill_check, e.g. 'perception'." },
+        toHit: { type: "number", description: "Required for attack: the attack bonus from the NPC's stat block." },
+        dc: { type: "number", description: "DC to beat, or the target's AC for an attack. Omit for an open roll." },
+        reason: { type: "string", description: "One short phrase for why this roll is happening." },
+      },
+      required: ["npcName", "rollType"],
+    },
+  ),
+  tool(
+    "damage_npc",
+    "Deal damage to an NPC or monster after a player's attack connects. Tracks their HP so a fight actually ends when they run out.",
+    {
+      type: "object",
+      properties: {
+        npcName: { type: "string", description: "Exact name from the NPC roster. Must already have stats." },
+        amount: { type: "number", minimum: 0 },
+        reason: { type: "string" },
+      },
+      required: ["npcName", "amount"],
+    },
+  ),
+  tool("heal_npc", "Restore hit points to an NPC or monster.", {
+    type: "object",
+    properties: {
+      npcName: { type: "string", description: "Exact name from the NPC roster. Must already have stats." },
+      amount: { type: "number", minimum: 0 },
+    },
+    required: ["npcName", "amount"],
+  }),
   tool(
     "log_plot_event",
     "Record a plot beat future sessions should remember (a decision made, a secret learned, a promise given).",
@@ -174,6 +255,96 @@ export const DM_TOOLS: Tool[] = [
  *  injected into every story turn's context. */
 export const META_DM_TOOLS: Tool[] = DM_TOOLS.filter((t) => t.toolSpec?.name === "log_plot_event");
 
+/** NPC rolls and HP changes need real numbers — an unstatted NPC is a hard
+ *  error rather than an improvised default, so the DM is pushed to stat anyone
+ *  it wants to resolve mechanically instead of guessing on their behalf. */
+function requireStattedNpc(campaignId: number, npcName: string) {
+  const campaign = getCampaign(campaignId);
+  if (!campaign) throw new ToolExecutionError("Campaign not found.");
+  const entry = campaign.npcRoster.find((n) => n.name.toLowerCase() === (npcName ?? "").toLowerCase());
+  if (!entry) {
+    throw new ToolExecutionError(
+      `No NPC named "${npcName}" in the roster. Call update_npc to add them first.`,
+    );
+  }
+  if (!entry.stats) {
+    throw new ToolExecutionError(
+      `${entry.name} has no stat block. Call update_npc for them with a monsterId (or ac/hpMax/abilities) before rolling against them.`,
+    );
+  }
+  return { entry, stats: entry.stats };
+}
+
+/** Which of the opposing creature's passive scores a player's skill is measured
+ *  against. Anything not listed falls back to passive Perception — the common
+ *  case for "can they tell what I'm doing". */
+const OPPOSING_PASSIVE_BY_SKILL: Record<string, "perception" | "insight"> = {
+  stealth: "perception",
+  sleight_of_hand: "perception",
+  deception: "insight",
+  persuasion: "insight",
+  performance: "insight",
+};
+
+/**
+ * Turns "opposed by the gate guard" into a real DC from that guard's stat
+ * block. This exists so grounding a check in a creature is *easier* for the DM
+ * than guessing at it — it only has to name who is resisting, and the number
+ * follows. Deliberately throws when the NPC isn't statted: the error text tells
+ * the DM to stat them, which it can do in the same turn, and that's a better
+ * outcome than silently accepting an invented DC.
+ */
+function dcFromOpposingNpc(
+  campaignId: number,
+  npcName: string,
+  skill: string | undefined,
+): { dc: number; label: string } {
+  const { entry, stats } = requireStattedNpc(campaignId, npcName);
+  const sense = (skill && OPPOSING_PASSIVE_BY_SKILL[skill]) || "perception";
+  const dc = sense === "insight" ? npcPassiveInsight(stats) : npcPassivePerception(stats);
+  return { dc, label: `${entry.name}'s passive ${sense === "insight" ? "Insight" : "Perception"}` };
+}
+
+function saveNpcStats(campaignId: number, npcName: string, stats: NpcRosterEntry["stats"]): void {
+  const campaign = getCampaign(campaignId);
+  if (!campaign) throw new ToolExecutionError("Campaign not found.");
+  const roster = campaign.npcRoster.map((n) =>
+    n.name.toLowerCase() === npcName.toLowerCase() ? { ...n, stats } : n,
+  );
+  updateCampaignMemory(campaignId, { npcRoster: roster });
+}
+
+function buildNpcRollPurpose(args: Record<string, unknown>): NpcRollPurpose {
+  const rollType = args.rollType as string;
+  const dc = args.dc as number | undefined;
+  switch (rollType) {
+    case "ability_check":
+    case "saving_throw": {
+      const ability = args.ability as Ability | undefined;
+      if (!ability || !ABILITIES.includes(ability)) {
+        throw new ToolExecutionError(`${rollType} needs an "ability" (one of: ${ABILITIES.join(", ")}).`);
+      }
+      return rollType === "ability_check"
+        ? { type: "ability_check", ability, dc }
+        : { type: "saving_throw", ability, dc };
+    }
+    case "skill_check": {
+      const skill = args.skill as string | undefined;
+      if (!skill) throw new ToolExecutionError('skill_check needs a "skill", e.g. "perception".');
+      return { type: "skill_check", skill, dc };
+    }
+    case "attack": {
+      const toHit = Number(args.toHit);
+      if (!Number.isFinite(toHit)) {
+        throw new ToolExecutionError('attack needs a "toHit" bonus from the NPC\'s stat block.');
+      }
+      return { type: "attack", toHit, ac: dc, attackName: (args.reason as string) || undefined };
+    }
+    default:
+      throw new ToolExecutionError(`Unknown rollType "${rollType}".`);
+  }
+}
+
 function requireCharacter(campaignId: number, characterName: string) {
   const member = resolveCharacterInCampaign(campaignId, characterName);
   if (!member || member.characterId === null) {
@@ -193,18 +364,25 @@ export async function executeTool(
     switch (toolName) {
       case "request_roll": {
         const member = requireCharacter(campaignId, args.characterName as string);
+        const skill = args.skill as string | undefined;
+        const opposedBy = (args.opposedByNpc as string | undefined)?.trim();
+        // A named opponent's real passive score beats any DC the DM would
+        // otherwise guess, so it wins over an explicitly-passed dc.
+        const opposed = opposedBy ? dcFromOpposingNpc(campaignId, opposedBy, skill) : null;
         const request: PendingRollRequest = {
           characterId: member.characterId!,
           characterName: member.characterName!,
           rollType: args.rollType as PendingRollRequest["rollType"],
           ability: args.ability as string | undefined,
-          skill: args.skill as string | undefined,
-          dc: args.dc as number | undefined,
+          skill,
+          dc: opposed?.dc ?? (args.dc as number | undefined),
           reason: (args.reason as string) ?? "",
         };
         setPendingRollRequest(campaignId, request);
         return {
-          resultText: `Waiting on ${member.characterName} to roll.`,
+          resultText: `Waiting on ${member.characterName} to roll.${
+            opposed ? ` DC ${opposed.dc} — ${opposed.label}.` : ""
+          }`,
           broadcastContent: `The DM asks ${member.characterName} to make ${describeRoll(request)}${
             request.reason ? ` — ${request.reason}` : ""
           }.`,
@@ -309,10 +487,81 @@ export async function executeTool(
         const name = args.name as string;
         const description = args.description as string;
         const disposition = (args.disposition as string) ?? "";
+        const existing = campaign.npcRoster.find((n) => n.name.toLowerCase() === name.toLowerCase());
+
+        const wantsStats =
+          args.monsterId !== undefined ||
+          args.ac !== undefined ||
+          args.hpMax !== undefined ||
+          args.abilities !== undefined ||
+          args.skills !== undefined ||
+          args.savingThrows !== undefined ||
+          args.cr !== undefined;
+
+        if (args.monsterId !== undefined && !MONSTER_IDS.includes(args.monsterId as string)) {
+          throw new ToolExecutionError(
+            `Unknown monsterId "${args.monsterId}". Available: ${MONSTER_IDS.join(", ")}. Omit it and give ac/hpMax/abilities directly for an original creature.`,
+          );
+        }
+
+        // Re-statting an NPC mid-scene would silently restore its HP, so an
+        // existing stat block is kept unless this call actually supplies stats.
+        const stats = wantsStats
+          ? buildNpcStatBlock({
+              monsterId: args.monsterId as string | undefined,
+              ac: args.ac as number | undefined,
+              hpMax: args.hpMax as number | undefined,
+              abilities: args.abilities as Record<string, number> | undefined,
+              skills: args.skills as Record<string, number> | undefined,
+              savingThrows: args.savingThrows as Record<string, number> | undefined,
+              cr: args.cr as string | undefined,
+            })
+          : existing?.stats;
+
+        const entry: NpcRosterEntry = { name, description, disposition, ...(stats ? { stats } : {}) };
         const roster = campaign.npcRoster.filter((n) => n.name.toLowerCase() !== name.toLowerCase());
-        roster.push({ name, description, disposition });
+        roster.push(entry);
         updateCampaignMemory(campaignId, { npcRoster: roster });
-        return { resultText: `NPC roster updated for ${name}.` };
+
+        return {
+          resultText: stats
+            ? `NPC roster updated for ${name}. AC ${stats.ac}, HP ${stats.hpCurrent}/${stats.hpMax}, passive Perception ${npcPassivePerception(stats)}.`
+            : `NPC roster updated for ${name} (no stats — they can't be rolled against).`,
+        };
+      }
+
+      case "roll_npc": {
+        const { entry, stats } = requireStattedNpc(campaignId, args.npcName as string);
+        const purpose = buildNpcRollPurpose(args);
+        const outcome = performNpcRoll(entry.name, stats, purpose);
+        const reason = (args.reason as string) ?? "";
+        return {
+          resultText: `${describeNpcRoll(outcome)}${reason ? ` (${reason})` : ""}`,
+          broadcastContent: `${describeNpcRoll(outcome)}${reason ? ` — ${reason}` : ""}`,
+        };
+      }
+
+      case "damage_npc": {
+        const { entry, stats } = requireStattedNpc(campaignId, args.npcName as string);
+        const amount = Math.max(0, Math.round(Number(args.amount)));
+        const updated = { ...stats, hpCurrent: Math.max(0, stats.hpCurrent - amount) };
+        saveNpcStats(campaignId, entry.name, updated);
+        const defeated = isNpcDefeated(updated);
+        return {
+          resultText: `${entry.name} is at ${updated.hpCurrent}/${updated.hpMax} HP${defeated ? " — defeated." : "."}`,
+          broadcastContent: `${entry.name} takes ${amount} damage${defeated ? " and is defeated!" : ` (${updated.hpCurrent}/${updated.hpMax} HP).`}`,
+        };
+      }
+
+      case "heal_npc": {
+        const { entry, stats } = requireStattedNpc(campaignId, args.npcName as string);
+        const amount = Math.max(0, Math.round(Number(args.amount)));
+        const updated = { ...stats, hpCurrent: Math.min(stats.hpMax, stats.hpCurrent + amount) };
+        saveNpcStats(campaignId, entry.name, updated);
+        return {
+          resultText: `${entry.name} is at ${updated.hpCurrent}/${updated.hpMax} HP.`,
+          broadcastContent: `${entry.name} regains ${amount} HP (${updated.hpCurrent}/${updated.hpMax}).`,
+        };
       }
 
       case "log_plot_event": {
