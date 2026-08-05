@@ -32,6 +32,7 @@ import { getCampaignPresence, getOnlineUserIds } from "@/lib/realtime/presence";
 import { runDmTurn } from "@/lib/ai/dm";
 import type { DmContextOptions } from "@/lib/ai/context";
 import { generateCampaignImage, detectSubjectsInText, type ImageSubject } from "@/lib/ai/images";
+import { composeSceneImagePrompt } from "@/lib/ai/scenePrompt";
 import { AiError } from "@/lib/ai/errors";
 
 function triggerDmTurn(campaignId: number, options?: DmContextOptions) {
@@ -430,32 +431,58 @@ export function registerSocketHandlers(io: SocketIOServer) {
             return member ?? { name };
           });
         } else {
-          // Player-direct 🎨 button path. The button's text field is
-          // optional — ground the image in the campaign's actual current
-          // scene by default (so "Illustrate this" with no text renders
-          // what the DM just narrated, not a blank guess), and treat any
-          // player text as an addendum rather than the whole prompt.
-          // Present (online) party members are always included — they're
-          // in the scene by virtue of playing right now — plus any roster
-          // NPCs named in the resulting text.
+          // Player-direct 🎨 button path. Ask the DM to describe the moment
+          // it just narrated, rather than assembling a prompt mechanically:
+          // the stored `currentScene` only refreshes when the DM calls
+          // `advance_scene`, so it lags the actual story badly (a fight
+          // belowdecks still illustrating the earlier scene up on deck).
+          // The player's text field is optional and is passed along as a
+          // refinement of that moment, not as the whole prompt.
           const campaign = getCampaign(campaignId);
-          const sceneText = campaign?.currentScene?.trim();
-          const extra = subject.trim();
-          effectiveSubject = sceneText
-            ? extra
-              ? `${sceneText}\n\nAlso emphasize: ${extra}`
-              : sceneText
-            : extra || "the current scene";
+          const composed = await composeSceneImagePrompt(campaignId, subject);
 
           const onlineUserIds = new Set(getOnlineUserIds(campaignId));
           const presentMembers = members.filter((m) => onlineUserIds.has(m.userId));
-          const presentCandidates: ImageSubject[] = presentMembers.map((m) => ({
-            name: m.characterName!,
-            characterId: m.characterId!,
-          }));
           const npcCandidates: ImageSubject[] = (campaign?.npcRoster ?? []).map((n) => ({ name: n.name }));
-          const namedNpcs = detectSubjectsInText(effectiveSubject, npcCandidates);
-          subjects = [...presentCandidates, ...namedNpcs];
+
+          if (composed) {
+            effectiveSubject = composed.description;
+            // The DM named who's in frame, so trust it over guessing: a
+            // present player whose character stepped away from the group
+            // shouldn't be painted back into the shot.
+            const named = composed.characters.length > 0 ? composed.characters : null;
+            if (named) {
+              const pool: ImageSubject[] = [
+                ...presentMembers.map((m) => ({ name: m.characterName!, characterId: m.characterId! })),
+                ...npcCandidates,
+              ];
+              subjects = named.map(
+                (name) =>
+                  pool.find((p) => p.name.toLowerCase() === name.toLowerCase()) ??
+                  detectSubjectsInText(name, pool)[0] ?? { name },
+              );
+            } else {
+              subjects = presentMembers.map((m) => ({
+                name: m.characterName!,
+                characterId: m.characterId!,
+              }));
+            }
+          } else {
+            // Compose failed (model error, empty campaign) — fall back to the
+            // stored scene rather than dropping the request.
+            const sceneText = campaign?.currentScene?.trim();
+            const extra = subject.trim();
+            effectiveSubject = sceneText
+              ? extra
+                ? `${sceneText}\n\nAlso emphasize: ${extra}`
+                : sceneText
+              : extra || "the current scene";
+            const presentCandidates: ImageSubject[] = presentMembers.map((m) => ({
+              name: m.characterName!,
+              characterId: m.characterId!,
+            }));
+            subjects = [...presentCandidates, ...detectSubjectsInText(effectiveSubject, npcCandidates)];
+          }
         }
 
         const { filePath } = await generateCampaignImage({

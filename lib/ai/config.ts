@@ -32,6 +32,12 @@ export const SUMMARIZE_EVERY_N_MESSAGES = 40;
 /** How many of the most recent messages are sent to the model verbatim. */
 export const RECENT_MESSAGE_WINDOW = 30;
 
+/** How much recent story the DM re-reads when composing an image prompt.
+ *  Deliberately shorter than RECENT_MESSAGE_WINDOW: the illustration should
+ *  depict the latest beat, and a long tail of older narration only pulls the
+ *  description back toward scenes the party has already left. */
+export const SCENE_PROMPT_MESSAGE_WINDOW = 12;
+
 /** Safety cap on tool-call round-trips within a single DM turn. */
 export const MAX_TOOL_ITERATIONS = 6;
 

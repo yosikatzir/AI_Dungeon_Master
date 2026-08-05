@@ -300,11 +300,31 @@ request in chat and calling `request_image_confirmation`, which the player
 then confirms with one click before anything generates. A per-campaign
 gallery lives at `/campaigns/[id]/gallery`.
 
+**What the 🎨 button illustrates**: the DM composes the image prompt itself
+(`composeSceneImagePrompt` in `lib/ai/scenePrompt.ts`). It re-reads the last
+`SCENE_PROMPT_MESSAGE_WINDOW` story messages and returns
+`{description, characters}` — a purely visual paragraph plus exactly who is
+in frame — using the same assistant-prefill JSON trick as the summarizer.
+The player's text field stays optional and is passed in as a refinement of
+that moment (angle, focus, emphasis), never as the whole prompt.
+
+This replaced an earlier approach that used the campaign's stored
+`currentScene` as the prompt, which was wrong in a way that only showed up in
+real play: `currentScene` refreshes only when the DM chooses to call its
+`advance_scene` tool, which happens far less often than the story actually
+moves. A reported case had a bard fighting belowdecks while the illustration
+showed him performing for sailors up on deck — faithfully rendering a scene
+several beats stale. The recent transcript is the real record of where the
+story is, so that is what the illustration is now built from. If the compose
+call fails, the old stored-scene path still runs as a fallback rather than
+dropping the request.
+
 **Multi-reference composition**: a scene can depict several established
 subjects at once — the DM lists everyone actually present in `subjects`
 when calling `request_image_confirmation` (its exact party members and NPC
-roster names; the 🎨-button path instead detects them with a word-boundary
-name match, `detectSubjectsInText`, against the same candidates). Each named
+roster names; the 🎨-button path uses the `characters` list the DM returned
+when composing the prompt, falling back to `detectSubjectsInText`'s
+word-boundary name match against the same candidates). Each named
 subject gets its own reference file — an uploaded portrait first, otherwise
 the newest registered image tagged with that name (`findReferenceImages` /
 `pickBestReferenceImages` in `lib/images.ts`) — capped at 4 references,
